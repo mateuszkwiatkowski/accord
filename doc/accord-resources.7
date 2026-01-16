@@ -1,0 +1,456 @@
+.TH ACCORD-RESOURCES 7 "January 2026" "accord 0.1.0" "Miscellaneous"
+.SH NAME
+accord\-resources \- resource types reference for accord
+.SH DESCRIPTION
+accord manages system state through typed resources. Each resource type represents
+a specific aspect of system configuration.
+.PP
+This manual provides detailed reference for all resource types, their attributes,
+platform support, and usage examples.
+.SH COMMON ATTRIBUTES
+All resources support these common attributes:
+.TP
+.B allow_failure
+Boolean (default: false). If true, accord continues applying remaining resources
+even if this resource fails. If false, accord stops immediately on failure (fail-fast).
+.PP
+.EX
+.packages = .{
+    .critical = .{},
+    .optional = .{
+        .allow_failure = true,
+    },
+}
+.EE
+.SH PACKAGE RESOURCE
+Install or remove system packages.
+.SS Attributes
+.TP
+.B name
+Package name (specified as key in manifest)
+.TP
+.B state
+.RS
+.IP \(bu 2
+.B .installed
+(default) \- Ensure package is installed
+.IP \(bu 2
+.B .absent
+\- Ensure package is removed
+.RE
+.TP
+.B version
+String (optional). Specific package version to install. Support varies by package manager.
+.TP
+.B allow_failure
+Boolean (default: false). Continue on error.
+.SS Platform Support
+.TP
+.B apt
+(Debian, Ubuntu) \- Full support
+.TP
+.B dnf, yum
+(RedHat family) \- Planned
+.TP
+.B pacman
+(Arch) \- Planned
+.TP
+.B apk
+(Alpine) \- Planned
+.TP
+.B brew
+(macOS) \- Planned
+.TP
+.B pkg
+(FreeBSD) \- Planned
+.SS Examples
+.EX
+.packages = .{
+    // Install nginx (default)
+    .nginx = .{},
+    
+    // Install specific version
+    .nodejs = .{
+        .version = "18.0.0",
+    },
+    
+    // Remove package
+    .apache2 = .{
+        .state = .absent,
+    },
+    
+    // Optional package (don't fail if unavailable)
+    .proprietary\-driver = .{
+        .allow_failure = true,
+    },
+}
+.EE
+.SS Notes
+Package manager is detected automatically based on system. If no supported package
+manager is found, operations fail with error.
+.PP
+Version support depends on package manager capabilities. Not all package managers
+support pinning specific versions.
+.SH FILE RESOURCE
+Manage file content, permissions, and ownership.
+.SS Attributes
+.TP
+.B path
+File path (specified as key in manifest using .@ syntax)
+.TP
+.B content
+String (optional). File content. Use \\\\ for multi-line strings. Mutually exclusive with
+.BR source .
+.TP
+.B source
+String (optional). Copy content from this file path. Mutually exclusive with
+.BR content .
+.TP
+.B mode
+Number (optional). Octal file permissions (e.g., 0o644). Use 0o prefix for octal.
+.TP
+.B owner
+String (optional). File owner username.
+.TP
+.B group
+String (optional). File group name.
+.TP
+.B state
+.RS
+.IP \(bu 2
+.B .present
+(default) \- Ensure file exists
+.IP \(bu 2
+.B .absent
+\- Ensure file is removed
+.RE
+.TP
+.B allow_failure
+Boolean (default: false). Continue on error.
+.SS Platform Support
+All platforms supported. Owner/group management requires UNIX-like systems.
+.SS Examples
+.EX
+.files = .{
+    // Simple file with content
+    .@"/etc/motd" = .{
+        .content = "Welcome to this system!",
+    },
+    
+    // File with full attributes
+    .@"/etc/myapp/config.ini" = .{
+        .content = 
+            \\\\[database]
+            \\\\host = localhost
+            \\\\port = 5432
+        ,
+        .mode = 0o644,
+        .owner = "root",
+        .group = "root",
+    },
+    
+    // Copy from source file
+    .@"/etc/nginx/nginx.conf" = .{
+        .source = "/opt/configs/nginx.conf",
+        .mode = 0o644,
+    },
+    
+    // Remove file
+    .@"/etc/old\-config" = .{
+        .state = .absent,
+    },
+    
+    // Sensitive file with restricted permissions
+    .@"/etc/app/secrets.conf" = .{
+        .content = "api_key=secret",
+        .mode = 0o600,
+        .owner = "appuser",
+    },
+}
+.EE
+.SS Notes
+If both
+.B content
+and
+.B source
+are omitted, only permissions and ownership are managed (file must already exist).
+.PP
+Mode, owner, and group are only applied if specified. Omitted attributes are not modified.
+.PP
+Changing file content preserves existing permissions unless
+.B mode
+is specified.
+.SH DIRECTORY RESOURCE
+Ensure directories exist with correct permissions.
+.SS Attributes
+.TP
+.B path
+Directory path (specified as key in manifest using .@ syntax)
+.TP
+.B mode
+Number (optional). Octal directory permissions (e.g., 0o755).
+.TP
+.B owner
+String (optional). Directory owner username.
+.TP
+.B group
+String (optional). Directory group name.
+.TP
+.B state
+.RS
+.IP \(bu 2
+.B .present
+(default) \- Ensure directory exists
+.IP \(bu 2
+.B .absent
+\- Ensure directory is removed
+.RE
+.TP
+.B allow_failure
+Boolean (default: false). Continue on error.
+.SS Platform Support
+All platforms supported. Owner/group management requires UNIX-like systems.
+.SS Examples
+.EX
+.directories = .{
+    // Simple directory
+    .@"/opt/myapp" = .{},
+    
+    // Directory with permissions
+    .@"/var/www" = .{
+        .mode = 0o755,
+        .owner = "www\-data",
+        .group = "www\-data",
+    },
+    
+    // Restricted directory
+    .@"/opt/secrets" = .{
+        .mode = 0o700,
+        .owner = "root",
+    },
+    
+    // Remove directory
+    .@"/tmp/old\-data" = .{
+        .state = .absent,
+    },
+}
+.EE
+.SS Notes
+Parent directories are created automatically if they don't exist.
+.PP
+Removing a directory (state = .absent) fails if directory is not empty. This is
+intentional to prevent accidental data loss.
+.SH SERVICE RESOURCE
+Manage system services (daemons).
+.SS Attributes
+.TP
+.B name
+Service name (specified as key in manifest)
+.TP
+.B state
+.RS
+.IP \(bu 2
+.B .running
+(default) \- Ensure service is running
+.IP \(bu 2
+.B .stopped
+\- Ensure service is stopped
+.RE
+.TP
+.B enabled
+Boolean (default: true). If true, service starts at boot. If false, service does
+not start at boot.
+.TP
+.B allow_failure
+Boolean (default: false). Continue on error.
+.SS Platform Support
+.TP
+.B systemd
+(Modern Linux) \- Full support
+.TP
+.B sysvinit
+(Legacy Linux) \- Planned
+.TP
+.B launchd
+(macOS) \- Planned
+.TP
+.B rc
+(BSD) \- Planned
+.TP
+.B openrc
+(Alpine, Gentoo) \- Planned
+.SS Examples
+.EX
+.services = .{
+    // Start and enable service (defaults)
+    .nginx = .{},
+    
+    // Start but don't enable at boot
+    .postgresql = .{
+        .enabled = false,
+    },
+    
+    // Stop and disable service
+    .apache2 = .{
+        .state = .stopped,
+        .enabled = false,
+    },
+    
+    // Optional service (don't fail if not present)
+    .custom\-service = .{
+        .allow_failure = true,
+    },
+}
+.EE
+.SS Notes
+Init system is detected automatically. If no supported init system is found,
+operations fail with error.
+.PP
+Starting a stopped service and enabling a disabled service are separate operations.
+Both are performed if needed.
+.PP
+Service names must match system service names exactly (e.g., "nginx", "postgresql",
+"docker").
+.SH USER RESOURCE
+Create and manage system users.
+.SS Attributes
+.TP
+.B name
+Username (specified as key in manifest)
+.TP
+.B uid
+Number (optional). User ID. If omitted, system assigns next available UID.
+.TP
+.B groups
+Array of strings (optional). Groups the user should belong to. User is added to
+these groups; existing group memberships may be preserved.
+.TP
+.B shell
+String (optional, default: /bin/bash). User's login shell.
+.TP
+.B home
+String (optional, default: /home/username). User's home directory.
+.TP
+.B allow_failure
+Boolean (default: false). Continue on error.
+.SS Platform Support
+All UNIX-like platforms. Uses standard tools: useradd, usermod.
+.SS Examples
+.EX
+.users = .{
+    // Simple user with defaults
+    .developer = .{},
+    
+    // User with full configuration
+    .deployer = .{
+        .uid = 1001,
+        .groups = .{ "sudo", "docker", "www\-data" },
+        .shell = "/bin/bash",
+        .home = "/home/deployer",
+    },
+    
+    // System user (no login)
+    .appuser = .{
+        .uid = 999,
+        .shell = "/bin/false",
+        .home = "/var/lib/app",
+    },
+}
+.EE
+.SS Notes
+If user already exists, attributes are updated to match specification where possible.
+.PP
+Creating users typically requires root privileges.
+.PP
+Groups specified must already exist. Create groups first if needed.
+.PP
+Home directory is created automatically if it doesn't exist.
+.SH GROUP RESOURCE
+Create system groups.
+.SS Attributes
+.TP
+.B name
+Group name (specified as key in manifest)
+.TP
+.B gid
+Number (optional). Group ID. If omitted, system assigns next available GID.
+.TP
+.B allow_failure
+Boolean (default: false). Continue on error.
+.SS Platform Support
+All UNIX-like platforms. Uses standard tools: groupadd.
+.SS Examples
+.EX
+.groups = .{
+    // Simple group with automatic GID
+    .developers = .{},
+    
+    // Group with specific GID
+    .appgroup = .{
+        .gid = 1001,
+    },
+    
+    // Multiple groups
+    .webadmins = .{ .gid = 1002 },
+    .dbadmins = .{ .gid = 1003 },
+}
+.EE
+.SS Notes
+If group already exists with different GID, operation fails. GID cannot be changed
+for existing groups.
+.PP
+Creating groups typically requires root privileges.
+.PP
+Create groups before creating users that belong to them.
+.SH ORDERING RECOMMENDATIONS
+Resources are applied in manifest order. Recommended ordering:
+.PP
+1. Groups (needed by users)
+.br
+2. Users (needed by file/directory ownership)
+.br
+3. Packages (installs software)
+.br
+4. Directories (file parents)
+.br
+5. Files (configuration)
+.br
+6. Services (uses configuration)
+.PP
+Example:
+.EX
+.{
+    .groups = .{ /* ... */ },
+    .users = .{ /* ... */ },
+    .packages = .{ /* ... */ },
+    .directories = .{ /* ... */ },
+    .files = .{ /* ... */ },
+    .services = .{ /* ... */ },
+}
+.EE
+.SH ERROR HANDLING
+Resources fail-fast by default. First error stops execution. Use
+.B allow_failure
+for optional resources:
+.PP
+.EX
+.packages = .{
+    .nginx = .{},  // Critical
+    .vim = .{
+        .allow_failure = true,  // Optional
+    },
+}
+.EE
+.SH IDEMPOTENCY
+All resources are idempotent. Running accord multiple times with the same manifest
+produces the same result. Only necessary changes are applied.
+.PP
+Example: If package is already installed, accord reports "already satisfied" and
+doesn't reinstall.
+.SH SEE ALSO
+.BR accord (1),
+.BR accord\-manifest (5)
+.PP
+Full documentation: <https://github.com/mateuszkwiatkowski/accord>
+.SH AUTHOR
+Mateusz Kwiatkowski

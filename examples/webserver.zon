@@ -1,0 +1,70 @@
+// Web server example - nginx with basic HTML site
+//
+// This manifest sets up a simple web server:
+// - Installs nginx
+// - Creates directory structure
+// - Deploys index.html
+// - Configures and starts nginx service
+//
+// Usage: sudo accord apply webserver.zon
+
+.{
+    // Install nginx package
+    .packages = .{
+        .nginx = .{},
+    },
+    
+    // Create directory structure
+    .directories = .{
+        .@"/var/www" = .{
+            .mode = 0o755,
+            .owner = "www-data",
+            .group = "www-data",
+        },
+        .@"/var/www/html" = .{
+            .mode = 0o755,
+            .owner = "www-data",
+            .group = "www-data",
+        },
+    },
+    
+    // Deploy website files
+    .files = .{
+        .@"/var/www/html/index.html" = .{
+            .content = 
+                \\<!DOCTYPE html>
+                \\<html lang="en">
+                \\<head>
+                \\    <meta charset="UTF-8">
+                \\    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                \\    <title>Welcome to accord!</title>
+                \\    <style>
+                \\        body {
+                \\            font-family: system-ui, -apple-system, sans-serif;
+                \\            max-width: 800px;
+                \\            margin: 100px auto;
+                \\            padding: 20px;
+                \\            text-align: center;
+                \\        }
+                \\        h1 { color: #2563eb; }
+                \\        p { color: #64748b; line-height: 1.6; }
+                \\    </style>
+                \\</head>
+                \\<body>
+                \\    <h1>Welcome to accord!</h1>
+                \\    <p>Your web server is configured and running.</p>
+                \\    <p>This page was deployed using accord configuration management.</p>
+                \\</body>
+                \\</html>
+            ,
+            .mode = 0o644,
+            .owner = "www-data",
+            .group = "www-data",
+        },
+    },
+    
+    // Ensure nginx is running and enabled
+    .services = .{
+        .nginx = .{},
+    },
+}

@@ -1,0 +1,142 @@
+// Docker host configuration
+//
+// This manifest sets up a system as a Docker container host:
+// - Installs Docker and Docker Compose
+// - Creates docker group
+// - Creates deployer user with docker access
+// - Sets up docker directory structure
+// - Configures Docker daemon
+// - Ensures Docker service is running
+//
+// Usage: sudo accord apply docker-host.zon
+
+.{
+    // Install Docker packages
+    .packages = .{
+        .docker = .{},
+        .@"docker-compose" = .{
+            .allow_failure = true,  // May not be in all repos
+        },
+    },
+    
+    // Create docker group (usually created by package, but be explicit)
+    .groups = .{
+        .docker = .{
+            .gid = 999,
+            .allow_failure = true,  // May already exist from package
+        },
+    },
+    
+    // Create deployer user for container management
+    .users = .{
+        .deployer = .{
+            .uid = 1001,
+            .groups = .{ "docker", "sudo" },
+            .shell = "/bin/bash",
+            .home = "/home/deployer",
+        },
+    },
+    
+    // Create docker directory structure
+    .directories = .{
+        .@"/opt/docker" = .{
+            .mode = 0o755,
+            .owner = "deployer",
+            .group = "docker",
+        },
+        .@"/opt/docker/volumes" = .{
+            .mode = 0o755,
+            .owner = "deployer",
+            .group = "docker",
+        },
+        .@"/opt/docker/compose" = .{
+            .mode = 0o755,
+            .owner = "deployer",
+            .group = "docker",
+        },
+        .@"/var/log/docker" = .{
+            .mode = 0o755,
+            .owner = "root",
+            .group = "docker",
+        },
+    },
+    
+    // Configure Docker daemon
+    .files = .{
+        .@"/etc/docker/daemon.json" = .{
+            .content = 
+                \\{
+                \\  "log-driver": "json-file",
+                \\  "log-opts": {
+                \\    "max-size": "10m",
+                \\    "max-file": "3"
+                \\  },
+                \\  "storage-driver": "overlay2",
+                \\  "userland-proxy": false,
+                \\  "live-restore": true
+                \\}
+            ,
+            .mode = 0o644,
+            .owner = "root",
+            .group = "root",
+        },
+        
+        // Docker cleanup script
+        .@"/opt/docker/cleanup.sh" = .{
+            .content = 
+                \\#!/bin/bash
+                \\# Docker cleanup script - remove unused resources
+                \\
+                \\echo "Cleaning up Docker resources..."
+                \\
+                \\# Remove stopped containers
+                \\docker container prune -f
+                \\
+                \\# Remove unused images
+                \\docker image prune -a -f
+                \\
+                \\# Remove unused volumes
+                \\docker volume prune -f
+                \\
+                \\# Remove unused networks
+                \\docker network prune -f
+                \\
+                \\echo "Cleanup complete."
+                \\docker system df
+            ,
+            .mode = 0o755,
+            .owner = "deployer",
+            .group = "docker",
+        },
+        
+        // Sample docker-compose.yml
+        .@"/opt/docker/compose/README.md" = .{
+            .content = 
+                \\# Docker Compose Projects
+                \\
+                \\Place your docker-compose.yml files in subdirectories here.
+                \\
+                \\Example structure:
+                \\```
+                \\/opt/docker/compose/
+                \\├── webapp/
+                \\│   └── docker-compose.yml
+                \\├── database/
+                \\│   └── docker-compose.yml
+                \\└── monitoring/
+                \\    └── docker-compose.yml
+                \\```
+                \\
+                \\Run with: `docker-compose up -d`
+            ,
+            .mode = 0o644,
+            .owner = "deployer",
+            .group = "docker",
+        },
+    },
+    
+    // Ensure Docker service is running and enabled
+    .services = .{
+        .docker = .{},
+    },
+}

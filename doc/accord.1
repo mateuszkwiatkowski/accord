@@ -1,0 +1,141 @@
+.TH ACCORD 1 "January 2026" "accord 0.1.0" "User Commands"
+.SH NAME
+accord \- lightweight configuration management
+.SH SYNOPSIS
+.B accord apply
+[\fIOPTIONS\fR]
+.I MANIFEST
+.br
+.B accord
+.B \-\-version
+.br
+.B accord
+.B \-\-help
+.SH DESCRIPTION
+.B accord
+applies system configuration from declarative ZON manifests using promise theory.
+It ensures system state matches desired state described in manifests, making only
+necessary changes (idempotent).
+.PP
+accord follows UNIX philosophy: it's a lightweight tool that runs on-demand,
+applies configuration, and exits with a clear status code. No background processes.
+.SH COMMANDS
+.TP
+.B apply \fIMANIFEST\fR
+Apply configuration from manifest file. Checks current system state, applies
+necessary changes to reach desired state, and reports results.
+.SH OPTIONS
+.TP
+.BR \-n ", " \-\-dry\-run
+Show what would change without making any modifications. Useful for testing
+manifests before applying them.
+.TP
+.BR \-\-log\-level =\fILEVEL\fR
+Set logging verbosity. Available levels:
+.RS
+.IP \(bu 2
+.B quiet
+\- Only errors and summary
+.IP \(bu 2
+.B normal
+\- Changes only (not "already satisfied")
+.IP \(bu 2
+.B verbose
+\- All checks and changes (DEFAULT)
+.IP \(bu 2
+.B debug
+\- Internal details for debugging
+.RE
+.TP
+.BR \-\-config =\fIPATH\fR
+Load configuration from file. Config file should be in ZON format. CLI options
+override config file settings. There is no default config file location.
+.TP
+.BR \-V ", " \-\-version
+Show version information and exit.
+.TP
+.BR \-h ", " \-\-help
+Show help message and exit.
+.SH EXIT STATUS
+accord uses standard UNIX exit codes for scripting:
+.TP
+.B 0
+Success. All resources satisfied or applied successfully.
+.TP
+.B 1
+General error. An unexpected error occurred.
+.TP
+.B 2
+Invalid manifest. Parse error or validation failure.
+.TP
+.B 3
+Permission denied. Insufficient privileges for operation.
+.TP
+.B 4
+Resource operation failed. One or more resources failed to apply.
+.SH EXAMPLES
+.TP
+Apply a manifest:
+.EX
+sudo accord apply /etc/accord/webserver.zon
+.EE
+.TP
+Check what would change (dry run):
+.EX
+accord apply \-\-dry\-run manifest.zon
+.EE
+.TP
+Apply with debug logging:
+.EX
+sudo accord apply \-\-log\-level=debug manifest.zon
+.EE
+.TP
+Apply with config file:
+.EX
+sudo accord apply \-\-config=/etc/accord/config.zon manifest.zon
+.EE
+.TP
+Use in shell script:
+.EX
+if accord apply manifest.zon; then
+    echo "Configuration applied successfully"
+else
+    echo "Configuration failed with exit code $?"
+fi
+.EE
+.SH FILES
+No default configuration files. Specify config file with
+.B \-\-config
+option if needed.
+.PP
+Config file format (ZON):
+.EX
+.{
+    .log_level = .verbose,
+    .color = true,
+}
+.EE
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+If set (any value), disable colored output regardless of config.
+.SH NOTES
+accord requires appropriate permissions to modify system state. Most operations
+require root privileges. Use
+.B sudo
+or run as root.
+.PP
+Manifests are applied sequentially in the order resources appear. There is no
+automatic dependency resolution. Order your resources appropriately.
+.PP
+Running accord multiple times with the same manifest is safe (idempotent). Only
+necessary changes will be applied.
+.SH SEE ALSO
+.BR accord\-manifest (5),
+.BR accord\-resources (7)
+.PP
+Full documentation: <https://github.com/mateuszkwiatkowski/accord>
+.SH AUTHOR
+Mateusz Kwiatkowski
+.SH BUGS
+Report bugs to: <https://github.com/mateuszkwiatkowski/accord/issues>

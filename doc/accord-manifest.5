@@ -1,0 +1,345 @@
+.TH ACCORD-MANIFEST 5 "January 2026" "accord 0.1.0" "File Formats"
+.SH NAME
+accord\-manifest \- ZON manifest format for accord
+.SH DESCRIPTION
+accord manifests are written in ZON (Zig Object Notation), Zig's native data format.
+Manifests declare desired system state using a simple, type-safe syntax.
+.PP
+Manifests are validated strictly: unknown fields result in parse errors. This
+catches typos early and ensures correctness.
+.SH STRUCTURE
+A manifest is a ZON struct containing resource sections:
+.PP
+.EX
+.{
+    .packages = .{ /* package resources */ },
+    .files = .{ /* file resources */ },
+    .directories = .{ /* directory resources */ },
+    .services = .{ /* service resources */ },
+    .users = .{ /* user resources */ },
+    .groups = .{ /* group resources */ },
+}
+.EE
+.PP
+All sections are optional. Include only the resources you need.
+.SH RESOURCE SECTIONS
+.SS Packages
+Install or remove system packages.
+.PP
+.EX
+.packages = .{
+    .nginx = .{},  // Install (default)
+    .apache2 = .{ .state = .absent },  // Remove
+    .nodejs = .{ .version = "18.0.0" },
+}
+.EE
+.PP
+Attributes:
+.RS
+.IP \(bu 2
+.B state
+\- .installed (default) or .absent
+.IP \(bu 2
+.B version
+\- Specific version (optional)
+.IP \(bu 2
+.B allow_failure
+\- Continue on error (default: false)
+.RE
+.SS Files
+Manage file content, permissions, and ownership.
+.PP
+.EX
+.files = .{
+    .@"/etc/myapp/config.ini" = .{
+        .content = 
+            \\\\[database]
+            \\\\host = localhost
+        ,
+        .mode = 0o644,
+        .owner = "root",
+        .group = "root",
+    },
+    .@"/etc/old-config" = .{
+        .state = .absent,  // Remove
+    },
+}
+.EE
+.PP
+Attributes:
+.RS
+.IP \(bu 2
+.B content
+\- File content (use \\\\ for multi-line)
+.IP \(bu 2
+.B source
+\- Copy from source file
+.IP \(bu 2
+.B mode
+\- Octal permissions (e.g., 0o644)
+.IP \(bu 2
+.B owner
+\- File owner username
+.IP \(bu 2
+.B group
+\- File group name
+.IP \(bu 2
+.B state
+\- .present (default) or .absent
+.IP \(bu 2
+.B allow_failure
+\- Continue on error
+.RE
+.SS Directories
+Ensure directories exist with correct permissions.
+.PP
+.EX
+.directories = .{
+    .@"/var/www" = .{
+        .mode = 0o755,
+        .owner = "www-data",
+        .group = "www-data",
+    },
+    .@"/tmp/old" = .{
+        .state = .absent,  // Remove
+    },
+}
+.EE
+.PP
+Attributes:
+.RS
+.IP \(bu 2
+.B mode
+\- Octal permissions (e.g., 0o755)
+.IP \(bu 2
+.B owner
+\- Directory owner username
+.IP \(bu 2
+.B group
+\- Directory group name
+.IP \(bu 2
+.B state
+\- .present (default) or .absent
+.IP \(bu 2
+.B allow_failure
+\- Continue on error
+.RE
+.SS Services
+Manage system services.
+.PP
+.EX
+.services = .{
+    .nginx = .{},  // Running + enabled (defaults)
+    .apache2 = .{
+        .state = .stopped,
+        .enabled = false,
+    },
+}
+.EE
+.PP
+Attributes:
+.RS
+.IP \(bu 2
+.B state
+\- .running (default) or .stopped
+.IP \(bu 2
+.B enabled
+\- Start at boot (default: true)
+.IP \(bu 2
+.B allow_failure
+\- Continue on error
+.RE
+.SS Users
+Create and manage system users.
+.PP
+.EX
+.users = .{
+    .deployer = .{
+        .uid = 1001,
+        .groups = .{ "sudo", "docker" },
+        .shell = "/bin/bash",
+        .home = "/home/deployer",
+    },
+}
+.EE
+.PP
+Attributes:
+.RS
+.IP \(bu 2
+.B uid
+\- User ID (optional)
+.IP \(bu 2
+.B groups
+\- List of groups
+.IP \(bu 2
+.B shell
+\- Login shell (default: /bin/bash)
+.IP \(bu 2
+.B home
+\- Home directory (default: /home/username)
+.IP \(bu 2
+.B allow_failure
+\- Continue on error
+.RE
+.SS Groups
+Create system groups.
+.PP
+.EX
+.groups = .{
+    .appgroup = .{ .gid = 1001 },
+    .developers = .{},
+}
+.EE
+.PP
+Attributes:
+.RS
+.IP \(bu 2
+.B gid
+\- Group ID (optional)
+.IP \(bu 2
+.B allow_failure
+\- Continue on error
+.RE
+.SH SYNTAX REFERENCE
+.SS ZON Basics
+ZON is Zig's data format. Key syntax elements:
+.TP
+.B Struct literal
+.EX
+.{ .field = value }
+.EE
+.TP
+.B String with @ for special chars
+.EX
+.@"/path/with/special-chars"
+.EE
+.TP
+.B Multi-line string
+.EX
+\\\\line 1
+\\\\line 2
+.EE
+.TP
+.B Octal numbers
+.EX
+0o644  // rw-r--r--
+0o755  // rwxr-xr-x
+.EE
+.TP
+.B Enum values
+.EX
+.installed
+.absent
+.running
+.stopped
+.EE
+.TP
+.B Arrays
+.EX
+.{ "item1", "item2", "item3" }
+.EE
+.TP
+.B Comments
+.EX
+// Single-line comment
+.EE
+.SS File Permissions
+Common octal file modes:
+.TP
+.B 0o644
+rw-r--r-- (owner read/write, group/others read)
+.TP
+.B 0o755
+rwxr-xr-x (owner all, group/others read+execute)
+.TP
+.B 0o600
+rw------- (owner read/write only)
+.TP
+.B 0o700
+rwx------ (owner all, no group/others)
+.SH DEFAULTS
+Resources use sensible defaults to minimize configuration:
+.TP
+.B Packages
+Default state is .installed
+.TP
+.B Files
+Default state is .present
+.TP
+.B Directories
+Default state is .present
+.TP
+.B Services
+Default state is .running, enabled is true
+.TP
+.B All Resources
+Default allow_failure is false (fail-fast)
+.SH ORDERING
+Resources are applied in the order they appear in the manifest. There is no
+automatic dependency resolution. Structure your manifest appropriately:
+.PP
+.EX
+.{
+    .packages = .{ /* install packages first */ },
+    .groups = .{ /* create groups */ },
+    .users = .{ /* create users */ },
+    .directories = .{ /* create directories */ },
+    .files = .{ /* write files */ },
+    .services = .{ /* start services last */ },
+}
+.EE
+.SH ERROR HANDLING
+By default, accord stops on the first error (fail-fast). Override per-resource:
+.PP
+.EX
+.packages = .{
+    .critical = .{},  // Must succeed
+    .optional = .{
+        .allow_failure = true,  // Continue on error
+    },
+}
+.EE
+.SH EXAMPLES
+.SS Web Server
+.EX
+.{
+    .packages = .{
+        .nginx = .{},
+    },
+    .files = .{
+        .@"/var/www/html/index.html" = .{
+            .content = "<h1>Hello</h1>",
+            .mode = 0o644,
+        },
+    },
+    .services = .{
+        .nginx = .{},
+    },
+}
+.EE
+.SS User Creation
+.EX
+.{
+    .groups = .{
+        .developers = .{ .gid = 1001 },
+    },
+    .users = .{
+        .alice = .{
+            .uid = 1001,
+            .groups = .{ "developers", "sudo" },
+            .shell = "/bin/bash",
+        },
+    },
+    .directories = .{
+        .@"/home/alice/.ssh" = .{
+            .mode = 0o700,
+            .owner = "alice",
+        },
+    },
+}
+.EE
+.SH SEE ALSO
+.BR accord (1),
+.BR accord\-resources (7)
+.SH AUTHOR
+Mateusz Kwiatkowski

@@ -1,0 +1,28 @@
+// Simple example - minimal manifest for testing
+//
+// This is the simplest possible manifest demonstrating basic functionality.
+// Perfect for testing and learning accord syntax.
+//
+// Usage: accord apply simple.zon
+
+.{
+    // Install a single package
+    .packages = .{
+        .curl = .{},
+    },
+    
+    // Create a simple directory
+    .directories = .{
+        .@"/tmp/accord-test" = .{
+            .mode = 0o755,
+        },
+    },
+    
+    // Create a simple file
+    .files = .{
+        .@"/tmp/accord-test/hello.txt" = .{
+            .content = "Hello from accord!",
+            .mode = 0o644,
+        },
+    },
+}

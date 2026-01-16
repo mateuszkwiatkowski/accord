@@ -1,0 +1,110 @@
+// Development environment setup
+//
+// This manifest configures a development workstation with:
+// - Common development tools
+// - Docker for containerization
+// - Developer user with appropriate permissions
+// - Project directory structure
+// - Git configuration
+//
+// Usage: sudo accord apply devenv.zon
+
+.{
+    // Install development packages
+    .packages = .{
+        .git = .{},
+        .@"build-essential" = .{},
+        .curl = .{},
+        .wget = .{},
+        .vim = .{},
+        .tmux = .{},
+        .docker = .{},
+        .@"docker-compose" = .{
+            .allow_failure = true,  // Optional if not in repos
+        },
+    },
+    
+    // Create docker group
+    .groups = .{
+        .docker = .{
+            .gid = 999,
+        },
+    },
+    
+    // Create developer user
+    .users = .{
+        .developer = .{
+            .uid = 1000,
+            .groups = .{ "sudo", "docker" },
+            .shell = "/bin/bash",
+            .home = "/home/developer",
+        },
+    },
+    
+    // Create project directories
+    .directories = .{
+        .@"/home/developer/projects" = .{
+            .mode = 0o755,
+            .owner = "developer",
+            .group = "developer",
+        },
+        .@"/home/developer/.config" = .{
+            .mode = 0o755,
+            .owner = "developer",
+            .group = "developer",
+        },
+        .@"/home/developer/.ssh" = .{
+            .mode = 0o700,
+            .owner = "developer",
+            .group = "developer",
+        },
+    },
+    
+    // Configure git
+    .files = .{
+        .@"/home/developer/.gitconfig" = .{
+            .content = 
+                \\[user]
+                \\    name = Developer
+                \\    email = developer@example.com
+                \\
+                \\[core]
+                \\    editor = vim
+                \\    autocrlf = input
+                \\
+                \\[init]
+                \\    defaultBranch = main
+                \\
+                \\[pull]
+                \\    rebase = false
+                \\
+                \\[color]
+                \\    ui = auto
+            ,
+            .mode = 0o644,
+            .owner = "developer",
+            .group = "developer",
+        },
+        
+        // Basic vimrc
+        .@"/home/developer/.vimrc" = .{
+            .content = 
+                \\" Basic vim configuration
+                \\syntax on
+                \\set number
+                \\set expandtab
+                \\set tabstop=4
+                \\set shiftwidth=4
+                \\set autoindent
+            ,
+            .mode = 0o644,
+            .owner = "developer",
+            .group = "developer",
+        },
+    },
+    
+    // Ensure docker service is running
+    .services = .{
+        .docker = .{},
+    },
+}

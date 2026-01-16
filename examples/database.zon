@@ -1,0 +1,96 @@
+// Database server setup - PostgreSQL
+//
+// This manifest configures a PostgreSQL database server:
+// - Installs PostgreSQL and tools
+// - Creates database admin user
+// - Sets up backup directory
+// - Configures PostgreSQL (pg_hba.conf)
+// - Ensures service is running
+//
+// Usage: sudo accord apply database.zon
+
+.{
+    // Install PostgreSQL
+    .packages = .{
+        .postgresql = .{},
+        .@"postgresql-contrib" = .{},
+        .@"postgresql-client" = .{},
+    },
+    
+    // Create database admin user
+    .users = .{
+        .dbadmin = .{
+            .uid = 1001,
+            .groups = .{ "postgres" },
+            .shell = "/bin/bash",
+            .home = "/home/dbadmin",
+        },
+    },
+    
+    // Create backup and data directories
+    .directories = .{
+        .@"/var/lib/postgresql/backups" = .{
+            .mode = 0o700,
+            .owner = "postgres",
+            .group = "postgres",
+        },
+        .@"/var/lib/postgresql/scripts" = .{
+            .mode = 0o755,
+            .owner = "postgres",
+            .group = "postgres",
+        },
+    },
+    
+    // Configure PostgreSQL
+    .files = .{
+        // Client authentication config
+        .@"/etc/postgresql/14/main/pg_hba.conf" = .{
+            .content = 
+                \\# PostgreSQL Client Authentication Configuration File
+                \\# TYPE  DATABASE        USER            ADDRESS                 METHOD
+                \\
+                \\# "local" is for Unix domain socket connections only
+                \\local   all             postgres                                peer
+                \\local   all             all                                     peer
+                \\
+                \\# IPv4 local connections:
+                \\host    all             all             127.0.0.1/32            md5
+                \\
+                \\# IPv6 local connections:
+                \\host    all             all             ::1/128                 md5
+                \\
+                \\# Allow replication connections from localhost
+                \\local   replication     all                                     peer
+                \\host    replication     all             127.0.0.1/32            md5
+                \\host    replication     all             ::1/128                 md5
+            ,
+            .mode = 0o640,
+            .owner = "postgres",
+            .group = "postgres",
+        },
+        
+        // Simple backup script
+        .@"/var/lib/postgresql/scripts/backup.sh" = .{
+            .content = 
+                \\#!/bin/bash
+                \\# Simple PostgreSQL backup script
+                \\
+                \\BACKUP_DIR="/var/lib/postgresql/backups"
+                \\TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                \\
+                \\pg_dumpall | gzip > "$BACKUP_DIR/backup_$TIMESTAMP.sql.gz"
+                \\
+                \\# Keep only last 7 days of backups
+                \\find "$BACKUP_DIR" -name "backup_*.sql.gz" -mtime +7 -delete
+            ,
+            .mode = 0o755,
+            .owner = "postgres",
+            .group = "postgres",
+        },
+    },
+    
+    // Ensure PostgreSQL is running
+    .services = .{
+        .postgresql = .{},
+    },
+}
