@@ -1,0 +1,35 @@
+// Debian Docker test manifest
+//
+// This manifest tests directory operations in a Debian container.
+// Uses /tmp for safety and easy cleanup.
+//
+// Tests:
+// - Basic directory creation with mode 0o755
+// - Directory with different permissions (0o750, 0o700)
+//
+// Note: This manifest uses only top-level directories to avoid HashMap
+// ordering issues. In a future version with ArrayList-based resource
+// ordering, we can test subdirectories reliably.
+//
+// Usage: 
+//   accord apply test/fixtures/debian-test.zon
+//   (run twice to verify idempotency)
+
+.{
+    .directories = .{
+        // Basic directory creation
+        .@"/tmp/accord-docker-test-1" = .{
+            .mode = 0o755,
+        },
+        
+        // Directory with group-only write
+        .@"/tmp/accord-docker-test-2" = .{
+            .mode = 0o750,
+        },
+        
+        // Directory with restrictive permissions (owner only)
+        .@"/tmp/accord-docker-test-3" = .{
+            .mode = 0o700,
+        },
+    },
+}

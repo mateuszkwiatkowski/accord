@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.linkLibC(); // Required for chmod() C function
     b.installArtifact(exe);
 
     // Run command
@@ -32,6 +33,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    unit_tests.linkLibC(); // Required for chmod() C function
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);

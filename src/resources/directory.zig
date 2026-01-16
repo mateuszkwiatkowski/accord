@@ -3,6 +3,11 @@ const resource = @import("resource.zig");
 const system = @import("../system.zig");
 const output = @import("../output.zig");
 
+// Import C chmod function for setting directory permissions
+const c = @cImport({
+    @cInclude("sys/stat.h");
+});
+
 /// Directory resource - manage directory creation, permissions, and ownership
 pub const DirectoryResource = struct {
     base: resource.ResourceBase = .{},
@@ -108,10 +113,16 @@ pub const DirectoryResource = struct {
 
                 // Set mode if specified
                 if (self.mode) |mode| {
-                    var dir = try std.fs.openDirAbsolute(self.path, .{});
-                    defer dir.close();
-
-                    try dir.chmod(@intCast(mode));
+                    // Note: Can't use fchmod on directory fd on Linux, must use chmod with path
+                    // Convert path to null-terminated for C call
+                    const allocator = std.heap.page_allocator;
+                    const path_z = try allocator.dupeZ(u8, self.path);
+                    defer allocator.free(path_z);
+                    
+                    const result = c.chmod(path_z.ptr, @intCast(mode));
+                    if (result != 0) {
+                        return error.ChmodFailed;
+                    }
                 }
 
                 // Owner/group setting not yet implemented
