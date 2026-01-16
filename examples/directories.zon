@@ -1,0 +1,13 @@
+// Directory management example
+//
+// This manifest demonstrates directory resource management.
+//
+// Usage: accord apply directories.zon
+
+.{
+    .directories = .{
+        .@"/tmp/accord-example" = .{
+            .mode = 0o755,
+        },
+    },
+}

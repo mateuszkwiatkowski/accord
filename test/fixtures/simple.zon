@@ -1,0 +1,8 @@
+// Simple test manifest for MVP testing
+.{
+    .directories = .{
+        .@"/tmp/accord-mvp-test" = .{
+            .mode = 0o755,
+        },
+    },
+}
