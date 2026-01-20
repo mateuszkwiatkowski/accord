@@ -1,0 +1,45 @@
+// File management example
+//
+// This manifest demonstrates file resource management including
+// inline content, multi-line content, permissions, and ownership.
+//
+// Usage: accord apply files.zon (requires root for ownership changes)
+
+.{
+    .files = .{
+        // Simple file with inline content
+        .@"/tmp/accord-hello.txt" = .{
+            .content = "Hello from accord!",
+            .mode = 0o644,
+        },
+
+        // Multi-line content example
+        .@"/tmp/accord-config.conf" = .{
+            .content =
+            \\# Configuration file
+            \\server_name=localhost
+            \\port=8080
+            \\workers=4
+            \\debug=false
+            ,
+            .mode = 0o640,
+        },
+
+        // Multi-line with script content
+        .@"/tmp/accord-script.sh" = .{
+            .content =
+            \\#!/bin/bash
+            \\# Deployed by accord
+            \\
+            \\echo "Hello from accord script!"
+            \\echo "Current date: $(date)"
+            ,
+            .mode = 0o755,
+        },
+
+        // Ensure file is removed
+        .@"/tmp/accord-old-file.txt" = .{
+            .state = .absent,
+        },
+    },
+}

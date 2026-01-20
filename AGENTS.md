@@ -223,6 +223,31 @@ pub fn logSummary(result: ApplyResult) void;
 Summary: 3 resources checked, 3 changes applied, 0 failed
 ```
 
+#### `utils.zig`
+**Status**: ✅ **IMPLEMENTED**
+
+Shared utility functions for user/group resolution and file ownership management.
+
+```zig
+// Resolve username or numeric UID to UID
+pub fn resolveUid(owner_spec: []const u8) !u32;
+
+// Resolve groupname or numeric GID to GID
+pub fn resolveGid(group_spec: []const u8) !u32;
+
+// Change file/directory ownership (pass null to leave unchanged)
+pub fn chown(path: []const u8, uid: ?u32, gid: ?u32) !void;
+
+// Get current file/directory ownership using libc stat
+pub fn getFileOwnership(path: []const u8) !struct { uid: u32, gid: u32 };
+```
+
+**Key Features**:
+- Accepts both names ("www-data") and numeric IDs ("33")
+- Uses libc `getpwnam`/`getgrnam` for proper name service support
+- Cross-platform stat() implementation via libc
+- Error handling for invalid usernames/groups
+
 #### `resources/resource.zig`
 Base types and interfaces for all resources.
 
@@ -587,8 +612,24 @@ test "Package install - newpkg" {
 
 ### Example: File Resource
 
+**Status**: ✅ **IMPLEMENTED** (see `src/resources/file.zig`)
+
+**Key Features**:
+- Content management with SHA256 hashing for efficient comparison
+- Atomic file writes (write to temp, then rename)
+- Owner/group support (names and numeric IDs via libc)
+- Mode/permissions setting
+- Copy from source file support
+- Mutually exclusive content/source validation
+
+**Implementation Notes**:
+- Uses SHA256 for content comparison (efficient for large files)
+- Atomic writes prevent partial file states
+- Owner/group resolution via `utils.zig` helper functions
+- See actual implementation below (simplified example from design phase):
+
 ```zig
-// src/resources/file.zig
+// src/resources/file.zig (example/reference - see actual file for complete implementation)
 const std = @import("std");
 const fs = std.fs;
 const resource = @import("resource.zig");
@@ -703,10 +744,25 @@ pub const FileResource = struct {
 };
 ```
 
-### Example: Package Resource (apt only, current)
+### Example: Package Resource
+
+**Status**: ✅ **IMPLEMENTED** (see `src/resources/package.zig`)
+
+**Key Features**:
+- apt package manager support (install/remove)
+- Version pinning support (package=version)
+- Default state = installed
+- dpkg-query for package state checking
+- Non-interactive operations (-y flag)
+
+**Implementation Notes**:
+- Uses `dpkg-query -W -f='${Status}'` for checking package state
+- Supports version specification: `nginx=1.18.0-1`
+- Fixed-size argument arrays for simplicity
+- 9 comprehensive tests (all passing)
 
 ```zig
-// src/resources/package.zig
+// src/resources/package.zig (reference example)
 const std = @import("std");
 const resource = @import("resource.zig");
 const system = @import("../system.zig");
@@ -790,6 +846,63 @@ pub const PackageResource = struct {
         return self.name;
     }
 };
+```
+
+### Example: Service Resource
+
+**Status**: ✅ **IMPLEMENTED** (see `src/resources/service.zig`)
+
+**Key Features**:
+- systemd init system support (start/stop/enable/disable)
+- Default state = running
+- Default enabled = true (enabled at boot)
+- Dual-state management (running state + enabled state)
+- Uses systemctl commands
+
+**Implementation Notes**:
+- Uses `systemctl is-active` for checking running state
+- Uses `systemctl is-enabled` for checking boot enable state
+- Applies both state changes in sequence (start/stop then enable/disable)
+- 10 comprehensive tests (all passing)
+
+**Manifest Example**:
+```zig
+.services = .{
+    .nginx = .{}, // Default: running + enabled
+    .apache2 = .{
+        .state = .stopped,
+        .enabled = false,
+    },
+}
+```
+
+### Example: AptUpdate Resource
+
+**Status**: ✅ **IMPLEMENTED** (see `src/resources/apt_update.zig`)
+
+**Key Features**:
+- Updates apt package cache via `apt-get update`
+- Always runs (MVP - no frequency checking)
+- Nameless pattern following Chef's design
+- Runs BEFORE all other resources (especially packages)
+- Stderr capture for debugging
+
+**Implementation Notes**:
+- Singular resource (only one per manifest)
+- Default name: "update"
+- MVP always returns .needs_change to ensure fresh cache
+- Future: Could check `/var/lib/apt/periodic/update-success-stamp` for frequency
+- 6 comprehensive tests (all passing)
+
+**Manifest Example**:
+```zig
+.{
+    .apt_update = .{},  // Nameless pattern
+    
+    .packages = .{
+        .nginx = .{},
+    },
+}
 ```
 
 ---
@@ -1030,13 +1143,18 @@ defer allocator.free(msg);
 
 ## Future Roadmap
 
-### Phase 1: Foundation (Current - Debian/Ubuntu)
+### Phase 1: Foundation (Current - Debian/Ubuntu) - NEARLY COMPLETE ✅
 - ✓ Project setup and documentation
-- [ ] ZON manifest parser
-- [ ] System detection (Debian/Ubuntu, apt, systemd)
-- [ ] Core resources: file, directory, package, service, user, group
-- [ ] Unit and integration tests
-- [ ] CLI with proper flags and exit codes
+- ✓ ZON manifest parser (simplified, functional)
+- ✓ System detection (multi-platform: Linux, macOS, BSD)
+- ✓ File resource (content, mode, owner, group) with SHA256 hashing and atomic writes
+- ✓ Directory resource (mode, owner, group)
+- ✓ Package resource (apt support, version pinning, state management)
+- ✓ Service resource (systemd support, state and enabled management)
+- [ ] User resource (pending)
+- [ ] Group resource (pending)
+- ✓ Unit and integration tests (81 tests passing)
+- ✓ CLI with proper flags and exit codes
 
 ### Phase 2: Platform Expansion
 - RedHat family (dnf/yum, systemd)

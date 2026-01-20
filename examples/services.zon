@@ -1,0 +1,46 @@
+// Example manifest: Service management
+// This demonstrates systemd service management on Linux
+
+.{
+    // Manage systemd services
+    .services = .{
+        // Ensure nginx is running and enabled at boot (defaults)
+        .nginx = .{},
+
+        // Explicitly configure PostgreSQL
+        .postgresql = .{
+            .state = .running,
+            .enabled = true,
+        },
+
+        // Stop and disable Apache2
+        .apache2 = .{
+            .state = .stopped,
+            .enabled = false,
+        },
+
+        // Docker service
+        .docker = .{
+            .state = .running,
+            .enabled = true,
+        },
+
+        // SSH service
+        .ssh = .{
+            .state = .running,
+            .enabled = true,
+        },
+
+        // Cron service
+        .cron = .{
+            .state = .running,
+            .enabled = true,
+        },
+
+        // Example: Stop a service but keep it enabled
+        // .some-service = .{
+        //     .state = .stopped,
+        //     .enabled = true,
+        // },
+    },
+}

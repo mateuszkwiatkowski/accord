@@ -1,0 +1,42 @@
+// Example manifest: Package management
+// This demonstrates package installation and removal using apt on Debian/Ubuntu
+
+.{
+    // Always update package cache before installing packages
+    .apt_update = .{},
+
+    // Install essential packages
+    .packages = .{
+        // Web server
+        .nginx = .{},
+
+        // Database
+        .postgresql = .{
+            .state = .installed,
+        },
+
+        // Development tools
+        .git = .{},
+        .@"build-essential" = .{},
+
+        // Python
+        .python3 = .{},
+        .@"python3-pip" = .{},
+
+        // Utilities
+        .curl = .{},
+        .wget = .{},
+        .htop = .{},
+        .vim = .{},
+
+        // Specific version example
+        // .nginx = .{
+        //     .version = "1.18.0-1",
+        // },
+
+        // Remove unwanted packages
+        .apache2 = .{
+            .state = .absent,
+        },
+    },
+}

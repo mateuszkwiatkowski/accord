@@ -1,0 +1,12 @@
+// Example manifest: Update apt package cache
+//
+// This demonstrates updating the apt package cache.
+// Useful to run before package installations to ensure
+// the latest package information is available.
+//
+// Usage: sudo accord apply apt_update.zon
+
+.{
+    // Update apt package cache
+    .apt_update = .{},
+}

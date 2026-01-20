@@ -4,6 +4,7 @@
 // Uses /tmp for safety and easy cleanup.
 //
 // Tests:
+// - apt_update resource (updates package cache)
 // - Basic directory creation with mode 0o755
 // - Directory with different permissions (0o750, 0o700)
 //
@@ -11,22 +12,25 @@
 // ordering issues. In a future version with ArrayList-based resource
 // ordering, we can test subdirectories reliably.
 //
-// Usage: 
+// Usage:
 //   accord apply test/fixtures/debian-test.zon
 //   (run twice to verify idempotency)
 
 .{
+    // Update apt cache for Docker testing
+    .apt_update = .{},
+
     .directories = .{
         // Basic directory creation
         .@"/tmp/accord-docker-test-1" = .{
             .mode = 0o755,
         },
-        
+
         // Directory with group-only write
         .@"/tmp/accord-docker-test-2" = .{
             .mode = 0o750,
         },
-        
+
         // Directory with restrictive permissions (owner only)
         .@"/tmp/accord-docker-test-3" = .{
             .mode = 0o700,

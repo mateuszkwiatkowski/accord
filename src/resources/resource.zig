@@ -3,15 +3,14 @@ const system = @import("../system.zig");
 
 /// Resource state after checking
 pub const ResourceState = enum {
-    satisfied,    // Current state matches desired state
+    satisfied, // Current state matches desired state
     needs_change, // Needs to be modified
-    failed,       // Unable to check state
+    failed, // Unable to check state
 };
 
 /// Result of applying a resource
 pub const ResourceResult = struct {
     state: ResourceState,
-    message: []const u8,
     changed: bool,
 };
 
@@ -33,11 +32,11 @@ pub const ResourceBase = struct {
 //
 // pub fn apply(self: *Self, sys: *const system.SystemInfo, dry_run: bool) !ResourceResult
 //     Apply changes to bring resource to desired state.
+//     Logs its own output via output.logApply() before returning.
 //     Parameters:
 //       - dry_run: if true, don't make actual changes, just return what would happen
 //     Returns ResourceResult with:
 //       - state: final state after application
-//       - message: human-readable description of what was done
 //       - changed: true if changes were made, false if already satisfied
 //
 // pub fn describe(self: *const Self) []const u8
@@ -101,11 +100,9 @@ test "ResourceState enum values" {
 test "ResourceResult can be created" {
     const result = ResourceResult{
         .state = .satisfied,
-        .message = "Test message",
         .changed = false,
     };
 
     try std.testing.expect(result.state == .satisfied);
-    try std.testing.expect(std.mem.eql(u8, result.message, "Test message"));
     try std.testing.expect(result.changed == false);
 }

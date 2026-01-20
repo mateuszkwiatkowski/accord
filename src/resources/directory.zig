@@ -2,6 +2,7 @@ const std = @import("std");
 const resource = @import("resource.zig");
 const system = @import("../system.zig");
 const output = @import("../output.zig");
+const utils = @import("../utils.zig");
 
 // Import C chmod function for setting directory permissions
 const c = @cImport({
@@ -55,9 +56,36 @@ pub const DirectoryResource = struct {
             }
         }
 
-        // Owner/group checking not yet implemented
+        // Check owner/group if specified (optimize: get ownership once)
         if (self.owner != null or self.group != null) {
-            output.logDebug("Owner/group checking not yet implemented");
+            const current = utils.getFileOwnership(self.path) catch |err| {
+                output.logError("Directory", self.path, "Failed to get ownership");
+                return err;
+            };
+
+            // Check owner if specified
+            if (self.owner) |owner_spec| {
+                const desired_uid = utils.resolveUid(owner_spec) catch |err| {
+                    output.logError("Directory", self.path, "Failed to resolve owner");
+                    return err;
+                };
+                if (current.uid != desired_uid) {
+                    output.logDebug("Directory owner mismatch");
+                    return .needs_change;
+                }
+            }
+
+            // Check group if specified
+            if (self.group) |group_spec| {
+                const desired_gid = utils.resolveGid(group_spec) catch |err| {
+                    output.logError("Directory", self.path, "Failed to resolve group");
+                    return err;
+                };
+                if (current.gid != desired_gid) {
+                    output.logDebug("Directory group mismatch");
+                    return .needs_change;
+                }
+            }
         }
 
         return .satisfied;
@@ -70,10 +98,10 @@ pub const DirectoryResource = struct {
         output.logDebug(if (dry_run) "DRY RUN mode enabled" else "Normal mode");
 
         if (dry_run) {
-            const action = if (self.state == .present) "create" else "remove";
+            const action = if (self.state == .present) "would create" else "would remove";
+            output.logApply("Directory", self.path, action);
             return .{
                 .state = .needs_change,
-                .message = action,
                 .changed = true,
             };
         }
@@ -91,9 +119,9 @@ pub const DirectoryResource = struct {
                     return err;
                 };
 
+                output.logApply("Directory", self.path, "removed");
                 return .{
                     .state = .satisfied,
-                    .message = "removed",
                     .changed = true,
                 };
             },
@@ -118,21 +146,46 @@ pub const DirectoryResource = struct {
                     const allocator = std.heap.page_allocator;
                     const path_z = try allocator.dupeZ(u8, self.path);
                     defer allocator.free(path_z);
-                    
+
                     const result = c.chmod(path_z.ptr, @intCast(mode));
                     if (result != 0) {
                         return error.ChmodFailed;
                     }
                 }
 
-                // Owner/group setting not yet implemented
-                if (self.owner != null or self.group != null) {
-                    output.logDebug("Owner/group setting not yet implemented");
+                // Set owner/group if specified
+                var uid: ?u32 = null;
+                var gid: ?u32 = null;
+
+                if (self.owner) |owner_spec| {
+                    uid = utils.resolveUid(owner_spec) catch |err| {
+                        output.logError("Directory", self.path, "Failed to resolve owner");
+                        return err;
+                    };
                 }
 
+                if (self.group) |group_spec| {
+                    gid = utils.resolveGid(group_spec) catch |err| {
+                        output.logError("Directory", self.path, "Failed to resolve group");
+                        return err;
+                    };
+                }
+
+                if (uid != null or gid != null) {
+                    utils.chown(self.path, uid, gid) catch |err| {
+                        const err_msg = std.fmt.allocPrint(
+                            std.heap.page_allocator,
+                            "Failed to change ownership: {s}",
+                            .{@errorName(err)},
+                        ) catch "Failed to change ownership";
+                        output.logError("Directory", self.path, err_msg);
+                        return err;
+                    };
+                }
+
+                output.logApply("Directory", self.path, "created");
                 return .{
                     .state = .satisfied,
-                    .message = "created",
                     .changed = true,
                 };
             },
@@ -287,4 +340,167 @@ test "DirectoryResource dry run doesn't create" {
     // Verify directory was NOT created
     const open_result = std.fs.openDirAbsolute(test_path, .{});
     try std.testing.expectError(error.FileNotFound, open_result);
+}
+
+test "DirectoryResource check - owner matches" {
+    const test_path = "/tmp/accord-test-owner-check";
+    std.fs.makeDirAbsolute(test_path) catch {};
+    defer std.fs.deleteDirAbsolute(test_path) catch {};
+
+    // Get current user's ownership
+    const ownership = try utils.getFileOwnership(test_path);
+
+    // Use current user's UID as a string
+    const uid_str = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{ownership.uid});
+    defer std.testing.allocator.free(uid_str);
+
+    var dir = DirectoryResource{
+        .path = test_path,
+        .owner = uid_str,
+    };
+
+    const sys = system.SystemInfo{
+        .os_family = .unknown,
+        .pkg_manager = null,
+        .init_system = null,
+    };
+
+    // Should be satisfied since we're using the current owner
+    const state = try dir.check(&sys);
+    try std.testing.expect(state == .satisfied);
+}
+
+test "DirectoryResource apply - sets owner by name" {
+    const test_path = "/tmp/accord-test-owner-apply";
+    std.fs.makeDirAbsolute(test_path) catch {};
+    defer std.fs.deleteDirAbsolute(test_path) catch {};
+
+    // Get current ownership (will be reused)
+    const original = try utils.getFileOwnership(test_path);
+    const uid_str = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{original.uid});
+    defer std.testing.allocator.free(uid_str);
+    const gid_str = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{original.gid});
+    defer std.testing.allocator.free(gid_str);
+
+    var dir = DirectoryResource{
+        .path = test_path,
+        .owner = uid_str,
+        .group = gid_str,
+    };
+
+    const sys = system.SystemInfo{
+        .os_family = .unknown,
+        .pkg_manager = null,
+        .init_system = null,
+    };
+
+    const result = try dir.apply(&sys, false);
+    try std.testing.expect(result.changed == true);
+
+    // Verify ownership (should still be same as original since we set it to same values)
+    const ownership = try utils.getFileOwnership(test_path);
+    try std.testing.expectEqual(original.uid, ownership.uid);
+    try std.testing.expectEqual(original.gid, ownership.gid);
+}
+
+test "DirectoryResource apply - sets owner by UID" {
+    const test_path = "/tmp/accord-test-owner-uid";
+    std.fs.makeDirAbsolute(test_path) catch {};
+    defer std.fs.deleteDirAbsolute(test_path) catch {};
+
+    // Get current ownership and set to same (no-op but tests the function)
+    const original = try utils.getFileOwnership(test_path);
+    const uid_str = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{original.uid});
+    defer std.testing.allocator.free(uid_str);
+
+    var dir = DirectoryResource{
+        .path = test_path,
+        .owner = uid_str, // Numeric UID (current user)
+    };
+
+    const sys = system.SystemInfo{
+        .os_family = .unknown,
+        .pkg_manager = null,
+        .init_system = null,
+    };
+
+    const result = try dir.apply(&sys, false);
+    try std.testing.expect(result.changed == true);
+
+    const ownership = try utils.getFileOwnership(test_path);
+    try std.testing.expectEqual(original.uid, ownership.uid);
+}
+
+test "DirectoryResource apply - owner only leaves group unchanged" {
+    const test_path = "/tmp/accord-test-owner-only";
+    std.fs.makeDirAbsolute(test_path) catch {};
+    defer std.fs.deleteDirAbsolute(test_path) catch {};
+
+    // Get original ownership
+    const original = try utils.getFileOwnership(test_path);
+    const uid_str = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{original.uid});
+    defer std.testing.allocator.free(uid_str);
+
+    var dir = DirectoryResource{
+        .path = test_path,
+        .owner = uid_str,
+        // No group specified
+    };
+
+    const sys = system.SystemInfo{
+        .os_family = .unknown,
+        .pkg_manager = null,
+        .init_system = null,
+    };
+
+    _ = try dir.apply(&sys, false);
+
+    const after = try utils.getFileOwnership(test_path);
+    try std.testing.expectEqual(original.uid, after.uid);
+    try std.testing.expectEqual(original.gid, after.gid); // Group unchanged
+
+    std.fs.deleteDirAbsolute(test_path) catch {};
+}
+
+test "DirectoryResource check - group matches" {
+    const test_path = "/tmp/accord-test-group-check";
+    std.fs.makeDirAbsolute(test_path) catch {};
+    defer std.fs.deleteDirAbsolute(test_path) catch {};
+
+    var dir = DirectoryResource{
+        .path = test_path,
+        .group = "0", // Numeric GID 0
+    };
+
+    const sys = system.SystemInfo{
+        .os_family = .unknown,
+        .pkg_manager = null,
+        .init_system = null,
+    };
+
+    const state = try dir.check(&sys);
+    try std.testing.expect(state == .satisfied);
+}
+
+test "DirectoryResource apply - sets group by GID" {
+    const test_path = "/tmp/accord-test-group-gid";
+    std.fs.makeDirAbsolute(test_path) catch {};
+    defer std.fs.deleteDirAbsolute(test_path) catch {};
+
+    var dir = DirectoryResource{
+        .path = test_path,
+        .group = "0",
+    };
+
+    const sys = system.SystemInfo{
+        .os_family = .unknown,
+        .pkg_manager = null,
+        .init_system = null,
+    };
+
+    const result = try dir.apply(&sys, false);
+    try std.testing.expect(result.changed == true);
+
+    const ownership = try utils.getFileOwnership(test_path);
+    try std.testing.expectEqual(@as(u32, 0), ownership.gid);
 }

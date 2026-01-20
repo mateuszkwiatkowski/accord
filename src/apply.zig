@@ -25,6 +25,53 @@ pub fn applyManifest(
         .failed = 0,
     };
 
+    // Apply apt_update FIRST (must run before packages)
+    if (manifest.apt_update) |*apt_upd| blk: {
+        result.total += 1;
+
+        // Check current state
+        const state = apt_upd.check(sys) catch |err| {
+            if (apt_upd.base.allow_failure) {
+                output.logError("AptUpdate", apt_upd.name, @errorName(err));
+                result.failed += 1;
+                break :blk;
+            } else {
+                return err;
+            }
+        };
+
+        // Log check result
+        const status_msg = switch (state) {
+            .satisfied => "already satisfied",
+            .needs_change => "needs changes",
+            .failed => "check failed",
+        };
+        output.logCheck("AptUpdate", apt_upd.name, status_msg);
+
+        // If already satisfied, skip
+        if (state == .satisfied) {
+            result.satisfied += 1;
+        } else {
+            // Apply changes (resource logs its own output)
+            output.logDebug(if (dry_run) "Calling apt_upd.apply with dry_run=true" else "Calling apt_upd.apply with dry_run=false");
+            const apply_result = apt_upd.apply(sys, dry_run) catch |err| {
+                if (apt_upd.base.allow_failure) {
+                    output.logError("AptUpdate", apt_upd.name, @errorName(err));
+                    result.failed += 1;
+                    break :blk;
+                } else {
+                    return err;
+                }
+            };
+
+            if (apply_result.changed) {
+                result.applied += 1;
+            } else {
+                result.satisfied += 1;
+            }
+        }
+    }
+
     // Apply directories
     if (manifest.directories) |*dirs| {
         var iter = dirs.iterator();
@@ -57,7 +104,7 @@ pub fn applyManifest(
                 continue;
             }
 
-            // Apply changes
+            // Apply changes (resource logs its own output)
             output.logDebug(if (dry_run) "Calling dir.apply with dry_run=true" else "Calling dir.apply with dry_run=false");
             const apply_result = dir.apply(sys, dry_run) catch |err| {
                 if (dir.base.allow_failure) {
@@ -69,8 +116,57 @@ pub fn applyManifest(
                 }
             };
 
-            // Log application
-            output.logApply("Directory", dir.path, apply_result.message);
+            if (apply_result.changed) {
+                result.applied += 1;
+            } else {
+                result.satisfied += 1;
+            }
+        }
+    }
+
+    // Apply files
+    if (manifest.files) |*files| {
+        var iter = files.iterator();
+        while (iter.next()) |entry| {
+            result.total += 1;
+            const file = entry.value_ptr;
+
+            // Check current state
+            const state = file.check(sys) catch |err| {
+                if (file.base.allow_failure) {
+                    output.logError("File", file.path, @errorName(err));
+                    result.failed += 1;
+                    continue;
+                } else {
+                    return err;
+                }
+            };
+
+            // Log check result
+            const status_msg = switch (state) {
+                .satisfied => "already satisfied",
+                .needs_change => "needs changes",
+                .failed => "check failed",
+            };
+            output.logCheck("File", file.path, status_msg);
+
+            // If already satisfied, skip
+            if (state == .satisfied) {
+                result.satisfied += 1;
+                continue;
+            }
+
+            // Apply changes (resource logs its own output)
+            output.logDebug(if (dry_run) "Calling file.apply with dry_run=true" else "Calling file.apply with dry_run=false");
+            const apply_result = file.apply(sys, dry_run) catch |err| {
+                if (file.base.allow_failure) {
+                    output.logError("File", file.path, @errorName(err));
+                    result.failed += 1;
+                    continue;
+                } else {
+                    return err;
+                }
+            };
 
             if (apply_result.changed) {
                 result.applied += 1;
@@ -80,7 +176,111 @@ pub fn applyManifest(
         }
     }
 
-    // Future: apply files, packages, services, users, groups
+    // Apply packages
+    if (manifest.packages) |*pkgs| {
+        var iter = pkgs.iterator();
+        while (iter.next()) |entry| {
+            result.total += 1;
+            const pkg = entry.value_ptr;
+
+            // Check current state
+            const state = pkg.check(sys) catch |err| {
+                if (pkg.base.allow_failure) {
+                    output.logError("Package", pkg.name, @errorName(err));
+                    result.failed += 1;
+                    continue;
+                } else {
+                    return err;
+                }
+            };
+
+            // Log check result
+            const status_msg = switch (state) {
+                .satisfied => "already satisfied",
+                .needs_change => "needs changes",
+                .failed => "check failed",
+            };
+            output.logCheck("Package", pkg.name, status_msg);
+
+            // If already satisfied, skip
+            if (state == .satisfied) {
+                result.satisfied += 1;
+                continue;
+            }
+
+            // Apply changes (resource logs its own output)
+            output.logDebug(if (dry_run) "Calling pkg.apply with dry_run=true" else "Calling pkg.apply with dry_run=false");
+            const apply_result = pkg.apply(sys, dry_run) catch |err| {
+                if (pkg.base.allow_failure) {
+                    output.logError("Package", pkg.name, @errorName(err));
+                    result.failed += 1;
+                    continue;
+                } else {
+                    return err;
+                }
+            };
+
+            if (apply_result.changed) {
+                result.applied += 1;
+            } else {
+                result.satisfied += 1;
+            }
+        }
+    }
+
+    // Apply services
+    if (manifest.services) |*svcs| {
+        var iter = svcs.iterator();
+        while (iter.next()) |entry| {
+            result.total += 1;
+            const svc = entry.value_ptr;
+
+            // Check current state
+            const state = svc.check(sys) catch |err| {
+                if (svc.base.allow_failure) {
+                    output.logError("Service", svc.name, @errorName(err));
+                    result.failed += 1;
+                    continue;
+                } else {
+                    return err;
+                }
+            };
+
+            // Log check result
+            const status_msg = switch (state) {
+                .satisfied => "already satisfied",
+                .needs_change => "needs changes",
+                .failed => "check failed",
+            };
+            output.logCheck("Service", svc.name, status_msg);
+
+            // If already satisfied, skip
+            if (state == .satisfied) {
+                result.satisfied += 1;
+                continue;
+            }
+
+            // Apply changes (resource logs its own output)
+            output.logDebug(if (dry_run) "Calling svc.apply with dry_run=true" else "Calling svc.apply with dry_run=false");
+            const apply_result = svc.apply(sys, dry_run) catch |err| {
+                if (svc.base.allow_failure) {
+                    output.logError("Service", svc.name, @errorName(err));
+                    result.failed += 1;
+                    continue;
+                } else {
+                    return err;
+                }
+            };
+
+            if (apply_result.changed) {
+                result.applied += 1;
+            } else {
+                result.satisfied += 1;
+            }
+        }
+    }
+
+    // Future: apply users, groups
 
     return result;
 }
@@ -255,7 +455,7 @@ test "apply manifest with allow_failure" {
     // Should not error even though first directory fails
     const result = try applyManifest(&manifest, &sys, false);
     try std.testing.expect(result.total == 2);
-    
+
     // Cleanup success directory
     std.fs.deleteDirAbsolute("/tmp/accord-test-success") catch {};
 }

@@ -1,13 +1,40 @@
 // Directory management example
 //
-// This manifest demonstrates directory resource management.
+// This manifest demonstrates directory resource management including
+// permissions and state management.
 //
 // Usage: accord apply directories.zon
+//
+// NOTE: To test ownership features, run with sudo and uncomment the ownership examples below.
 
 .{
     .directories = .{
+        // Basic directory with permissions
         .@"/tmp/accord-example" = .{
             .mode = 0o755,
         },
+
+        // Directory with specific permissions
+        .@"/tmp/accord-restricted" = .{
+            .mode = 0o750,
+        },
+
+        // Ensure directory is removed
+        .@"/tmp/accord-old-directory" = .{
+            .state = .absent,
+        },
+
+        // Ownership examples (uncomment and run with sudo to test):
+        // .@"/tmp/accord-owned-dir" = .{
+        //     .mode = 0o755,
+        //     .owner = "root",
+        //     .group = "root",
+        // },
+        //
+        // .@"/tmp/accord-numeric-owner" = .{
+        //     .mode = 0o750,
+        //     .owner = "0",
+        //     .group = "0",
+        // },
     },
 }
