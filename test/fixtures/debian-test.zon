@@ -8,10 +8,6 @@
 // - Basic directory creation with mode 0o755
 // - Directory with different permissions (0o750, 0o700)
 //
-// Note: This manifest uses only top-level directories to avoid HashMap
-// ordering issues. In a future version with ArrayList-based resource
-// ordering, we can test subdirectories reliably.
-//
 // Usage:
 //   accord apply test/fixtures/debian-test.zon
 //   (run twice to verify idempotency)

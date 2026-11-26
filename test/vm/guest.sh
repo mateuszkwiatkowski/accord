@@ -75,7 +75,8 @@ check_files() {
 	# No group in the manifest: BSD gives new files the directory's group,
 	# Linux the creator's, so only mode and owner are asserted.
 	assert_perms "$dir/copied.txt" "-rw------- root *"
-	[ "$(cat "$dir/content.txt")" = "hello from accord" ] || fail "content.txt differs"
+	# Exact bytes: the manifest's \n escape must be decoded
+	printf 'hello from accord\n' | cmp -s - "$dir/content.txt" || fail "content.txt differs"
 	cmp -s source.txt "$dir/copied.txt" || fail "copied.txt differs from its source"
 
 	step "apply again (idempotency)"
@@ -87,7 +88,7 @@ check_files() {
 	echo tampered > "$dir/content.txt"
 	accord apply files.zon
 	assert_perms "$dir/content.txt" "-rw-r----- daemon daemon"
-	[ "$(cat "$dir/content.txt")" = "hello from accord" ] || fail "content.txt not restored"
+	printf 'hello from accord\n' | cmp -s - "$dir/content.txt" || fail "content.txt not restored"
 
 	rm -rf "$dir"
 }

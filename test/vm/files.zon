@@ -14,7 +14,7 @@
 
     .files = .{
         .@"/var/tmp/accord-vm-files/content.txt" = .{
-            .content = "hello from accord",
+            .content = "hello from accord\n",
             .mode = 0o640,
             .owner = "daemon",
             .group = "daemon",

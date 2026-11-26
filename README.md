@@ -240,7 +240,7 @@ Manage system services (systemd, etc.).
 
 #### Users
 
-Create and manage system users.
+**Not implemented yet**: a manifest with a `.users` section is rejected. Planned syntax:
 
 ```zig
 .users = .{
@@ -271,7 +271,7 @@ Create and manage system users.
 
 #### Groups
 
-Create system groups.
+**Not implemented yet**: a manifest with a `.groups` section is rejected. Planned syntax:
 
 ```zig
 .groups = .{

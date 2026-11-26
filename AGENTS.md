@@ -112,10 +112,10 @@ accord/
   ```
 
 #### `parser.zig`
-- Parse ZON manifest into resource structures
-- Validate manifest structure (strict mode - unknown fields = error)
-- Return parsed resource list in order
-- Apply sensible defaults for omitted fields
+- `std.zig.Ast` + `ZonGen` build the tree; `Parser` walks the top level and each section's keys (paths and names are not known at compile time)
+- Each resource body is parsed by `std.zon.parse.fromZoir` into a `*Spec` struct (`DirectorySpec`, ...), which rejects unknown attributes and wrong types and supplies defaults
+- Unknown sections, syntax errors and relative paths are `error.InvalidManifest`; `parseReporting` returns a `path:line:col: error:` message (main exits 2)
+- Sections are slices in manifest order; strings live in `Manifest.arena`
 
 #### `system.zig`
 Platform detection and abstraction layer. This is **critical for extensibility**.
@@ -419,26 +419,12 @@ pub const NewResource = struct {
 
 #### 2. Add to manifest parser (`parser.zig`)
 
-```zig
-// Add to Manifest struct
-pub const Manifest = struct {
-    packages: ?std.StringHashMap(PackageResource) = null,
-    files: ?std.StringHashMap(FileResource) = null,
-    newresources: ?std.StringHashMap(NewResource) = null, // ADD THIS
-    // ... other resources
-};
+- A `NewResourceSpec` struct: every manifest attribute with its default, plus `allow_failure`, without the key field or `base`
+- A `newresources: []NewResource = &.{}` field on `Manifest`
+- A branch in `Parser.parseRoot` that calls `p.section(NewResourceSpec, node, paths)` and copies each entry into a `NewResource`
+- The section name in `sections_list`, and tests for the section and a rejected unknown attribute
 
-// Add parsing logic in parse() function
-if (manifest_obj.get("newresources")) |newres_obj| {
-    var newres_map = std.StringHashMap(NewResource).init(allocator);
-    var iter = newres_obj.iterator();
-    while (iter.next()) |entry| {
-        const resource_data = try parseNewResource(entry.value_ptr.*);
-        try newres_map.put(entry.key_ptr.*, resource_data);
-    }
-    manifest.newresources = newres_map;
-}
-```
+Without the branch, manifests using the section are rejected as unknown.
 
 #### 3. Add to application loop (`apply.zig`)
 
@@ -1143,7 +1129,7 @@ defer allocator.free(msg);
 
 ### Phase 1: Foundation - NEARLY COMPLETE ✅
 - ✓ Project setup and documentation
-- ✓ ZON manifest parser (simplified, functional)
+- ✓ ZON manifest parser (std.zon, strict: unknown sections and attributes are errors)
 - ✓ System detection (multi-platform: Linux, macOS, BSD)
 - ✓ File resource (content, mode, owner, group) with SHA256 hashing and atomic writes
 - ✓ Directory resource (mode, owner, group)
@@ -1151,7 +1137,7 @@ defer allocator.free(msg);
 - ✓ Service resource (state and enabled management)
 - [ ] User resource (pending)
 - [ ] Group resource (pending)
-- ✓ Unit and integration tests (108 tests)
+- ✓ Unit and integration tests (104 tests)
 - ✓ CLI with proper flags and exit codes
 
 ### Phase 2: Platform Expansion

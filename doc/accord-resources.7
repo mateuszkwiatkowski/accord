@@ -334,7 +334,9 @@ Only the ones that differ from the current state are performed.
 Service names must match system service names exactly (e.g., "nginx", "postgresql",
 "docker").
 .SH USER RESOURCE
-Create and manage system users.
+Not implemented yet: a manifest with a
+.B .users
+section is rejected. Planned syntax and behavior:
 .SS Attributes
 .TP
 .B name
@@ -388,7 +390,9 @@ Groups specified must already exist. Create groups first if needed.
 .PP
 Home directory is created automatically if it doesn't exist.
 .SH GROUP RESOURCE
-Create system groups.
+Not implemented yet: a manifest with a
+.B .groups
+section is rejected. Planned syntax and behavior:
 .SS Attributes
 .TP
 .B name

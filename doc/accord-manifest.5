@@ -5,8 +5,15 @@ accord\-manifest \- ZON manifest format for accord
 accord manifests are written in ZON (Zig Object Notation), Zig's native data format.
 Manifests declare desired system state using a simple, type-safe syntax.
 .PP
-Manifests are validated strictly: unknown fields result in parse errors. This
-catches typos early and ensures correctness.
+Manifests are validated strictly. A syntax error, an unknown section, an
+unknown attribute, a value of the wrong type or a relative file or directory
+path stops accord before anything is applied, with exit status 2 and a
+.I file:line:column
+message naming what was expected.
+.PP
+Strings follow Zig rules: escapes such as \\n and \\t are decoded, and in a
+multi-line \\\\ string everything after the \\\\ is content, including
+indentation.
 .SH STRUCTURE
 A manifest is a ZON struct containing resource sections:
 .PP
@@ -16,8 +23,7 @@ A manifest is a ZON struct containing resource sections:
     .files = .{ /* file resources */ },
     .directories = .{ /* directory resources */ },
     .services = .{ /* service resources */ },
-    .users = .{ /* user resources */ },
-    .groups = .{ /* group resources */ },
+    .package_cache = .{},  // refresh the package index first
 }
 .EE
 .PP
@@ -150,7 +156,9 @@ Attributes:
 \- Continue on error
 .RE
 .SS Users
-Create and manage system users.
+Not implemented yet: a manifest with a
+.B .users
+section is rejected. Planned syntax:
 .PP
 .EX
 .users = .{
@@ -182,7 +190,9 @@ Attributes:
 \- Continue on error
 .RE
 .SS Groups
-Create system groups.
+Not implemented yet: a manifest with a
+.B .groups
+section is rejected. Planned syntax:
 .PP
 .EX
 .groups = .{
@@ -275,19 +285,15 @@ Default state is .running, enabled is true
 .B All Resources
 Default allow_failure is false (fail-fast)
 .SH ORDERING
-Resources are applied in the order they appear in the manifest. There is no
-automatic dependency resolution. Structure your manifest appropriately:
-.PP
-.EX
-.{
-    .packages = .{ /* install packages first */ },
-    .groups = .{ /* create groups */ },
-    .users = .{ /* create users */ },
-    .directories = .{ /* create directories */ },
-    .files = .{ /* write files */ },
-    .services = .{ /* start services last */ },
-}
-.EE
+Sections are applied in a fixed order, whatever their order in the file:
+.BR package_cache ,
+.BR directories ,
+.BR files ,
+.BR packages ,
+.BR services .
+Within a section, resources are applied in the order they appear in the
+manifest, so a parent directory listed before its children is created first.
+There is no automatic dependency resolution.
 .SH ERROR HANDLING
 By default, accord stops on the first error (fail-fast). Override per-resource:
 .PP

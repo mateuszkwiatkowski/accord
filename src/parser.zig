@@ -1,4 +1,6 @@
 const std = @import("std");
+const Ast = std.zig.Ast;
+const Zoir = std.zig.Zoir;
 const DirectoryResource = @import("resources/directory.zig").DirectoryResource;
 const FileResource = @import("resources/file.zig").FileResource;
 const PackageResource = @import("resources/package.zig").PackageResource;
@@ -6,949 +8,330 @@ const ServiceResource = @import("resources/service.zig").ServiceResource;
 const PackageCacheResource = @import("resources/package_cache.zig").PackageCacheResource;
 const output = @import("output.zig");
 
-/// Manifest structure containing all resources
+/// Manifest structure containing all resources, each section in manifest order
 pub const Manifest = struct {
     package_cache: ?PackageCacheResource = null, // Singular, nameless pattern
-    directories: ?std.StringHashMap(DirectoryResource) = null,
-    files: ?std.StringHashMap(FileResource) = null,
-    packages: ?std.StringHashMap(PackageResource) = null,
-    services: ?std.StringHashMap(ServiceResource) = null,
+    directories: []DirectoryResource = &.{},
+    files: []FileResource = &.{},
+    packages: []PackageResource = &.{},
+    services: []ServiceResource = &.{},
     // Future: users, groups
 
-    allocator: std.mem.Allocator,
+    /// Owns the resource slices and every string they point to
+    arena: std.heap.ArenaAllocator,
 
-    // Track allocated strings for multi-line content (to be freed on deinit)
-    allocated_strings: [][]const u8 = &[_][]const u8{},
-
-    /// Initialize empty manifest
-    pub fn init(allocator: std.mem.Allocator) Manifest {
-        return .{
-            .allocator = allocator,
-        };
-    }
-
-    /// Free all resources
     pub fn deinit(self: *Manifest) void {
-        if (self.directories) |*dirs| {
-            dirs.deinit();
-        }
-        if (self.files) |*files| {
-            files.deinit();
-        }
-        if (self.packages) |*pkgs| {
-            pkgs.deinit();
-        }
-        if (self.services) |*svcs| {
-            svcs.deinit();
-        }
-        // Free allocated strings
-        for (self.allocated_strings) |str| {
-            self.allocator.free(str);
-        }
-        if (self.allocated_strings.len > 0) {
-            self.allocator.free(self.allocated_strings);
-        }
+        self.arena.deinit();
     }
 };
 
-/// Simple ZON parser for MVP
-/// For now, we use a simplified string-based parser
-/// This can be replaced with proper AST parsing later
-pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Manifest {
+pub const ParseError = error{ InvalidManifest, OutOfMemory };
+
+/// Top-level sections, for the "unknown section" message
+const sections_list = "package_cache, directories, files, packages, services";
+
+/// Resource bodies as written in a manifest. The key (path or name) is not
+/// part of the body, and `allow_failure` sits beside the other attributes.
+/// Any field not listed here is rejected.
+const DirectorySpec = struct {
+    mode: ?u32 = null,
+    owner: ?[]const u8 = null,
+    group: ?[]const u8 = null,
+    state: DirectoryResource.DirState = .present,
+    allow_failure: bool = false,
+};
+
+const FileSpec = struct {
+    content: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    mode: ?u32 = null,
+    owner: ?[]const u8 = null,
+    group: ?[]const u8 = null,
+    state: FileResource.FileState = .present,
+    allow_failure: bool = false,
+};
+
+const PackageSpec = struct {
+    state: PackageResource.PackageState = .installed,
+    version: ?[]const u8 = null,
+    allow_failure: bool = false,
+};
+
+const ServiceSpec = struct {
+    state: ServiceResource.ServiceState = .running,
+    enabled: bool = true,
+    allow_failure: bool = false,
+};
+
+const PackageCacheSpec = struct {
+    allow_failure: bool = false,
+};
+
+/// Parse a manifest. On error.InvalidManifest the reason is discarded; use
+/// parseReporting to get it.
+pub fn parse(gpa: std.mem.Allocator, source: []const u8) ParseError!Manifest {
+    var message: ?[]u8 = null;
+    defer if (message) |m| gpa.free(m);
+    return parseReporting(gpa, source, "manifest", &message);
+}
+
+/// Parse a manifest with Zig's ZON parser. Unknown sections, unknown
+/// attributes, wrong types and syntax errors are all error.InvalidManifest;
+/// then `message` is set to a "path:line:col: error: ..." description,
+/// allocated with `gpa` and owned by the caller.
+pub fn parseReporting(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    path: []const u8,
+    message: *?[]u8,
+) ParseError!Manifest {
     output.logDebug("Parsing manifest...");
 
-    var manifest = Manifest.init(allocator);
+    const source_z = try gpa.dupeSentinel(u8, source, 0);
+    defer gpa.free(source_z);
 
-    // Look for .package_cache, or its older apt-only name .apt_update
-    // (nameless pattern - single resource)
-    if (std.mem.indexOf(u8, content, ".package_cache") != null or
-        std.mem.indexOf(u8, content, ".apt_update") != null)
-    {
-        manifest.package_cache = PackageCacheResource{};
-    }
+    var ast = try Ast.parse(gpa, source_z, .{ .mode = .zon });
+    defer ast.deinit(gpa);
+    var zoir = try std.zig.ZonGen.generate(gpa, ast, .{});
+    defer zoir.deinit(gpa);
 
-    // Look for .directories section
-    if (std.mem.indexOf(u8, content, ".directories")) |start| {
-        // Find the opening brace after .directories
-        if (std.mem.indexOfPos(u8, content, start, ".{")) |open_pos| {
-            // Find matching closing brace
-            var brace_count: i32 = 1;
-            var pos = open_pos + 2;
-            var close_pos: usize = pos;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
 
-            while (pos < content.len and brace_count > 0) : (pos += 1) {
-                if (content[pos] == '{') {
-                    brace_count += 1;
-                } else if (content[pos] == '}') {
-                    brace_count -= 1;
-                    if (brace_count == 0) {
-                        close_pos = pos;
-                        break;
-                    }
-                }
-            }
+    var p = Parser{
+        .gpa = gpa,
+        .arena = arena.allocator(),
+        .ast = &ast,
+        .zoir = &zoir,
+        .path = path,
+        .message = message,
+    };
 
-            // Extract directories section content
-            const dirs_content = content[open_pos + 2 .. close_pos];
-            manifest.directories = try parseDirectoriesSimple(allocator, dirs_content);
-        }
-    }
-
-    // Look for .files section
-    if (std.mem.indexOf(u8, content, ".files")) |start| {
-        // Find the opening brace after .files
-        if (std.mem.indexOfPos(u8, content, start, ".{")) |open_pos| {
-            // Find matching closing brace
-            var brace_count: i32 = 1;
-            var pos = open_pos + 2;
-            var close_pos: usize = pos;
-
-            while (pos < content.len and brace_count > 0) : (pos += 1) {
-                if (content[pos] == '{') {
-                    brace_count += 1;
-                } else if (content[pos] == '}') {
-                    brace_count -= 1;
-                    if (brace_count == 0) {
-                        close_pos = pos;
-                        break;
-                    }
-                }
-            }
-
-            // Extract files section content
-            const files_content = content[open_pos + 2 .. close_pos];
-            const parse_result = try parseFilesSimple(allocator, files_content);
-            manifest.files = parse_result.files;
-            // Merge with any existing allocated strings
-            if (manifest.allocated_strings.len > 0 or parse_result.allocated_strings.len > 0) {
-                const combined = try allocator.alloc([]const u8, manifest.allocated_strings.len + parse_result.allocated_strings.len);
-                @memcpy(combined[0..manifest.allocated_strings.len], manifest.allocated_strings);
-                @memcpy(combined[manifest.allocated_strings.len..], parse_result.allocated_strings);
-                if (manifest.allocated_strings.len > 0) allocator.free(manifest.allocated_strings);
-                if (parse_result.allocated_strings.len > 0) allocator.free(parse_result.allocated_strings);
-                manifest.allocated_strings = combined;
-            }
-        }
-    }
-
-    // Look for .packages section
-    if (std.mem.indexOf(u8, content, ".packages")) |start| {
-        // Find the opening brace after .packages
-        if (std.mem.indexOfPos(u8, content, start, ".{")) |open_pos| {
-            // Find matching closing brace
-            var brace_count: i32 = 1;
-            var pos = open_pos + 2;
-            var close_pos: usize = pos;
-
-            while (pos < content.len and brace_count > 0) : (pos += 1) {
-                if (content[pos] == '{') {
-                    brace_count += 1;
-                } else if (content[pos] == '}') {
-                    brace_count -= 1;
-                    if (brace_count == 0) {
-                        close_pos = pos;
-                        break;
-                    }
-                }
-            }
-
-            // Extract packages section content
-            const pkgs_content = content[open_pos + 2 .. close_pos];
-            manifest.packages = try parsePackagesSimple(allocator, pkgs_content);
-        }
-    }
-
-    // Look for .services section
-    if (std.mem.indexOf(u8, content, ".services")) |start| {
-        // Find the opening brace after .services
-        if (std.mem.indexOfPos(u8, content, start, ".{")) |open_pos| {
-            // Find matching closing brace
-            var brace_count: i32 = 1;
-            var pos = open_pos + 2;
-            var close_pos: usize = pos;
-
-            while (pos < content.len and brace_count > 0) : (pos += 1) {
-                if (content[pos] == '{') {
-                    brace_count += 1;
-                } else if (content[pos] == '}') {
-                    brace_count -= 1;
-                    if (brace_count == 0) {
-                        close_pos = pos;
-                        break;
-                    }
-                }
-            }
-
-            // Extract services section content
-            const svcs_content = content[open_pos + 2 .. close_pos];
-            manifest.services = try parseServicesSimple(allocator, svcs_content);
-        }
-    }
-
+    var manifest = Manifest{ .arena = undefined };
+    try p.parseRoot(&manifest);
+    manifest.arena = arena;
     return manifest;
 }
 
-/// Simple parser for directories section
-fn parseDirectoriesSimple(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-) !std.StringHashMap(DirectoryResource) {
-    var directories = std.StringHashMap(DirectoryResource).init(allocator);
+const Parser = struct {
+    gpa: std.mem.Allocator,
+    /// Results: outlives the parser as Manifest.arena
+    arena: std.mem.Allocator,
+    ast: *const Ast,
+    zoir: *const Zoir,
+    path: []const u8,
+    message: *?[]u8,
 
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var current_path: ?[]const u8 = null;
-    var current_resource: ?DirectoryResource = null;
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "//")) {
-            continue;
+    fn parseRoot(p: *Parser, manifest: *Manifest) ParseError!void {
+        // Syntax errors: let std.zon report them in its own format
+        if (p.zoir.hasCompileErrors()) {
+            _ = try p.typed(bool, .root);
+            unreachable;
         }
 
-        // Check if this is a new directory entry (starts with .@")
-        if (std.mem.indexOf(u8, trimmed, ".@\"")) |_| {
-            // Save previous entry if exists
-            if (current_path) |path| {
-                if (current_resource) |res| {
-                    try directories.put(path, res);
+        const root = switch (Zoir.Node.Index.root.get(p.zoir)) {
+            .empty_literal => return,
+            .struct_literal => |s| s,
+            else => return p.fail(.root, false, "a manifest is a struct literal: .{{ .files = .{{ ... }}, ... }}", .{}),
+        };
+
+        for (root.names, 0..) |name_nts, i| {
+            const name = name_nts.get(p.zoir);
+            const node = root.vals.at(@intCast(i));
+
+            if (std.mem.eql(u8, name, "package_cache") or std.mem.eql(u8, name, "apt_update")) {
+                if (manifest.package_cache != null) {
+                    return p.fail(node, true, "package_cache given twice (apt_update is another name for it)", .{});
                 }
-            }
-
-            // Extract path
-            const start = std.mem.indexOf(u8, trimmed, "\"").? + 1;
-            const end = std.mem.indexOfPos(u8, trimmed, start, "\"").?;
-            const path = trimmed[start..end];
-
-            current_path = path;
-            current_resource = DirectoryResource{ .path = path };
-
-            // Check for inline attributes on the same line
-            if (std.mem.indexOf(u8, trimmed, ".{")) |brace_pos| {
-                const inline_attrs = trimmed[brace_pos..];
-                current_resource = try parseInlineAttributes(current_resource.?, inline_attrs);
-            }
-        } else if (current_resource != null) {
-            // Parse attributes
-            if (std.mem.indexOf(u8, trimmed, ".mode")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "0o")) |mode_start| {
-                    const mode_end = mode_start + 5; // 0o### format
-                    if (mode_end <= trimmed.len) {
-                        const mode_str = trimmed[mode_start + 2 .. mode_end];
-                        const mode = std.fmt.parseInt(u32, mode_str, 8) catch 0o755;
-                        current_resource.?.mode = mode;
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".state")) |_| {
-                if (std.mem.indexOf(u8, trimmed, ".absent")) |_| {
-                    current_resource.?.state = .absent;
-                } else {
-                    current_resource.?.state = .present;
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".owner")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.owner = trimmed[start..quote_end];
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".group")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.group = trimmed[start..quote_end];
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".allow_failure")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "true")) |_| {
-                    current_resource.?.base.allow_failure = true;
-                }
-            }
-        }
-    }
-
-    // Save last entry
-    if (current_path) |path| {
-        if (current_resource) |res| {
-            try directories.put(path, res);
-        }
-    }
-
-    return directories;
-}
-
-/// Parse inline attributes (attributes on the same line as the directory)
-fn parseInlineAttributes(resource: DirectoryResource, attrs_line: []const u8) !DirectoryResource {
-    var res = resource;
-
-    if (std.mem.indexOf(u8, attrs_line, ".mode")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "0o")) |mode_start| {
-            const mode_end = mode_start + 5; // 0o### format
-            if (mode_end <= attrs_line.len) {
-                const mode_str = attrs_line[mode_start + 2 .. mode_end];
-                const mode = std.fmt.parseInt(u32, mode_str, 8) catch 0o755;
-                res.mode = mode;
+                const spec = try p.typed(PackageCacheSpec, node);
+                manifest.package_cache = .{ .base = .{ .allow_failure = spec.allow_failure } };
+            } else if (std.mem.eql(u8, name, "directories")) {
+                const entries = try p.section(DirectorySpec, node, true);
+                const dirs = try p.arena.alloc(DirectoryResource, entries.len);
+                for (entries, dirs) |e, *dir| dir.* = .{
+                    .base = .{ .allow_failure = e.spec.allow_failure },
+                    .path = e.key,
+                    .mode = e.spec.mode,
+                    .owner = e.spec.owner,
+                    .group = e.spec.group,
+                    .state = e.spec.state,
+                };
+                manifest.directories = dirs;
+            } else if (std.mem.eql(u8, name, "files")) {
+                const entries = try p.section(FileSpec, node, true);
+                const files = try p.arena.alloc(FileResource, entries.len);
+                for (entries, files) |e, *file| file.* = .{
+                    .base = .{ .allow_failure = e.spec.allow_failure },
+                    .path = e.key,
+                    .content = e.spec.content,
+                    .source = e.spec.source,
+                    .mode = e.spec.mode,
+                    .owner = e.spec.owner,
+                    .group = e.spec.group,
+                    .state = e.spec.state,
+                };
+                manifest.files = files;
+            } else if (std.mem.eql(u8, name, "packages")) {
+                const entries = try p.section(PackageSpec, node, false);
+                const pkgs = try p.arena.alloc(PackageResource, entries.len);
+                for (entries, pkgs) |e, *pkg| pkg.* = .{
+                    .base = .{ .allow_failure = e.spec.allow_failure },
+                    .name = e.key,
+                    .state = e.spec.state,
+                    .version = e.spec.version,
+                };
+                manifest.packages = pkgs;
+            } else if (std.mem.eql(u8, name, "services")) {
+                const entries = try p.section(ServiceSpec, node, false);
+                const svcs = try p.arena.alloc(ServiceResource, entries.len);
+                for (entries, svcs) |e, *svc| svc.* = .{
+                    .base = .{ .allow_failure = e.spec.allow_failure },
+                    .name = e.key,
+                    .state = e.spec.state,
+                    .enabled = e.spec.enabled,
+                };
+                manifest.services = svcs;
+            } else {
+                return p.fail(node, true, "unknown section '.{s}' (supported: {s})", .{ name, sections_list });
             }
         }
     }
 
-    if (std.mem.indexOf(u8, attrs_line, ".state")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, ".absent")) |_| {
-            res.state = .absent;
-        } else {
-            res.state = .present;
-        }
+    fn Entry(comptime Spec: type) type {
+        return struct { key: []const u8, spec: Spec };
     }
 
-    if (std.mem.indexOf(u8, attrs_line, ".owner")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.owner = attrs_line[start..quote_end];
+    /// A section is `.{ .key = .{ ...body... }, ... }`; keys are paths when
+    /// `paths` is set, names otherwise
+    fn section(p: *Parser, comptime Spec: type, node: Zoir.Node.Index, paths: bool) ParseError![]Entry(Spec) {
+        const s = switch (node.get(p.zoir)) {
+            .empty_literal => return &.{},
+            .struct_literal => |s| s,
+            else => return p.fail(node, false, "expected .{{ .@\"key\" = .{{ ... }}, ... }}", .{}),
+        };
+
+        const entries = try p.arena.alloc(Entry(Spec), s.names.len);
+        for (s.names, entries, 0..) |name_nts, *entry, i| {
+            const body = s.vals.at(@intCast(i));
+            const key = name_nts.get(p.zoir);
+            // Resources use *Absolute filesystem calls, which assert this
+            if (paths and !std.fs.path.isAbsolute(key)) {
+                return p.fail(body, true, "'{s}' is not an absolute path", .{key});
             }
+            entry.* = .{
+                .key = try p.arena.dupe(u8, key),
+                .spec = try p.typed(Spec, body),
+            };
         }
+        return entries;
     }
 
-    if (std.mem.indexOf(u8, attrs_line, ".group")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.group = attrs_line[start..quote_end];
-            }
-        }
+    /// Parse one node into T with std.zon: strict about unknown fields and types
+    fn typed(p: *Parser, comptime T: type, node: Zoir.Node.Index) ParseError!T {
+        var diagnostics: std.zon.parse.Diagnostics = undefined;
+        return std.zon.parse.fromZoir(T, .{
+            .arena = p.arena,
+            .ast = p.ast,
+            .zoir = p.zoir,
+            .node = node,
+            .diagnostics = &diagnostics,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseZon => {
+                p.message.* = try std.fmt.allocPrint(p.gpa, "{f}", .{diagnostics.fmt(p.path)});
+                return error.InvalidManifest;
+            },
+        };
     }
 
-    if (std.mem.indexOf(u8, attrs_line, ".allow_failure")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "true")) |_| {
-            res.base.allow_failure = true;
-        }
+    /// Record an error at `node`, or at the field name in front of it
+    fn fail(p: *Parser, node: Zoir.Node.Index, at_name: bool, comptime fmt: []const u8, args: anytype) ParseError {
+        const ast_node = node.getAstNode(p.zoir);
+        // `.name = value`: the name is two tokens before the value
+        const token = if (at_name) p.ast.firstToken(ast_node) - 2 else p.ast.firstToken(ast_node);
+        const loc = p.ast.tokenLocation(0, token);
+        const reason = try std.fmt.allocPrint(p.gpa, fmt, args);
+        defer p.gpa.free(reason);
+        p.message.* = try std.fmt.allocPrint(p.gpa, "{s}:{d}:{d}: error: {s}", .{
+            p.path, loc.line + 1, loc.column + 1, reason,
+        });
+        return error.InvalidManifest;
     }
-
-    return res;
-}
-
-/// Simple parser for packages section
-fn parsePackagesSimple(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-) !std.StringHashMap(PackageResource) {
-    var packages = std.StringHashMap(PackageResource).init(allocator);
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var current_name: ?[]const u8 = null;
-    var current_resource: ?PackageResource = null;
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "//")) {
-            continue;
-        }
-
-        // Check if this is a new package entry (starts with . and has = .{)
-        // Package entries: .nginx = .{}, or .@"package-name" = .{}
-        const is_package_entry = std.mem.startsWith(u8, trimmed, ".") and
-            std.mem.indexOf(u8, trimmed, "= .{") != null;
-
-        if (std.mem.startsWith(u8, trimmed, ".@\"")) {
-            // Save previous entry if exists
-            if (current_name) |name| {
-                if (current_resource) |res| {
-                    try packages.put(name, res);
-                }
-            }
-
-            // Extract name with @"" syntax
-            const start = std.mem.indexOf(u8, trimmed, "\"").? + 1;
-            const end = std.mem.indexOfPos(u8, trimmed, start, "\"").?;
-            const name = trimmed[start..end];
-
-            current_name = name;
-            current_resource = PackageResource{ .name = name };
-
-            // Check for inline attributes on the same line
-            if (std.mem.indexOf(u8, trimmed, ".{")) |brace_pos| {
-                const inline_attrs = trimmed[brace_pos..];
-                current_resource = try parsePackageInlineAttributes(current_resource.?, inline_attrs);
-            }
-        } else if (is_package_entry) {
-            // Regular identifier (no quotes needed)
-            // Save previous entry if exists
-            if (current_name) |name| {
-                if (current_resource) |res| {
-                    try packages.put(name, res);
-                }
-            }
-
-            // Extract name until = or whitespace
-            var name_end: usize = 1; // Skip the leading .
-            while (name_end < trimmed.len) : (name_end += 1) {
-                const c = trimmed[name_end];
-                if (c == ' ' or c == '=' or c == '\t') break;
-            }
-            const name = trimmed[1..name_end];
-
-            current_name = name;
-            current_resource = PackageResource{ .name = name };
-
-            // Check for inline attributes on the same line
-            if (std.mem.indexOf(u8, trimmed, ".{")) |brace_pos| {
-                const inline_attrs = trimmed[brace_pos..];
-                current_resource = try parsePackageInlineAttributes(current_resource.?, inline_attrs);
-            }
-        } else if (current_resource != null) {
-            // Parse attributes
-            if (std.mem.indexOf(u8, trimmed, ".state")) |_| {
-                if (std.mem.indexOf(u8, trimmed, ".absent")) |_| {
-                    current_resource.?.state = .absent;
-                } else if (std.mem.indexOf(u8, trimmed, ".installed")) |_| {
-                    current_resource.?.state = .installed;
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".version")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.version = trimmed[start..quote_end];
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".allow_failure")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "true")) |_| {
-                    current_resource.?.base.allow_failure = true;
-                }
-            }
-        }
-    }
-
-    // Save last entry
-    if (current_name) |name| {
-        if (current_resource) |res| {
-            try packages.put(name, res);
-        }
-    }
-
-    return packages;
-}
-
-/// Parse inline attributes for packages
-fn parsePackageInlineAttributes(resource: PackageResource, attrs_line: []const u8) !PackageResource {
-    var res = resource;
-
-    if (std.mem.indexOf(u8, attrs_line, ".state")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, ".absent")) |_| {
-            res.state = .absent;
-        } else if (std.mem.indexOf(u8, attrs_line, ".installed")) |_| {
-            res.state = .installed;
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".version")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.version = attrs_line[start..quote_end];
-            }
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".allow_failure")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "true")) |_| {
-            res.base.allow_failure = true;
-        }
-    }
-
-    return res;
-}
-
-/// Simple parser for services section
-fn parseServicesSimple(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-) !std.StringHashMap(ServiceResource) {
-    var services = std.StringHashMap(ServiceResource).init(allocator);
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var current_name: ?[]const u8 = null;
-    var current_resource: ?ServiceResource = null;
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "//")) {
-            continue;
-        }
-
-        // Check if this is a new service entry (starts with . and has = .{)
-        const is_service_entry = std.mem.startsWith(u8, trimmed, ".") and
-            std.mem.indexOf(u8, trimmed, "= .{") != null;
-
-        if (std.mem.startsWith(u8, trimmed, ".@\"")) {
-            // Save previous entry if exists
-            if (current_name) |name| {
-                if (current_resource) |res| {
-                    try services.put(name, res);
-                }
-            }
-
-            // Extract name with @"" syntax
-            const start = std.mem.indexOf(u8, trimmed, "\"").? + 1;
-            const end = std.mem.indexOfPos(u8, trimmed, start, "\"").?;
-            const name = trimmed[start..end];
-
-            current_name = name;
-            current_resource = ServiceResource{ .name = name };
-
-            // Check for inline attributes on the same line
-            if (std.mem.indexOf(u8, trimmed, ".{")) |brace_pos| {
-                const inline_attrs = trimmed[brace_pos..];
-                current_resource = try parseServiceInlineAttributes(current_resource.?, inline_attrs);
-            }
-        } else if (is_service_entry) {
-            // Regular identifier (no quotes needed)
-            // Save previous entry if exists
-            if (current_name) |name| {
-                if (current_resource) |res| {
-                    try services.put(name, res);
-                }
-            }
-
-            // Extract name until = or whitespace
-            var name_end: usize = 1; // Skip the leading .
-            while (name_end < trimmed.len) : (name_end += 1) {
-                const c = trimmed[name_end];
-                if (c == ' ' or c == '=' or c == '\t') break;
-            }
-            const name = trimmed[1..name_end];
-
-            current_name = name;
-            current_resource = ServiceResource{ .name = name };
-
-            // Check for inline attributes on the same line
-            if (std.mem.indexOf(u8, trimmed, ".{")) |brace_pos| {
-                const inline_attrs = trimmed[brace_pos..];
-                current_resource = try parseServiceInlineAttributes(current_resource.?, inline_attrs);
-            }
-        } else if (current_resource != null) {
-            // Parse attributes
-            if (std.mem.indexOf(u8, trimmed, ".state")) |_| {
-                if (std.mem.indexOf(u8, trimmed, ".stopped")) |_| {
-                    current_resource.?.state = .stopped;
-                } else if (std.mem.indexOf(u8, trimmed, ".running")) |_| {
-                    current_resource.?.state = .running;
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".enabled")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "false")) |_| {
-                    current_resource.?.enabled = false;
-                } else if (std.mem.indexOf(u8, trimmed, "true")) |_| {
-                    current_resource.?.enabled = true;
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".allow_failure")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "true")) |_| {
-                    current_resource.?.base.allow_failure = true;
-                }
-            }
-        }
-    }
-
-    // Save last entry
-    if (current_name) |name| {
-        if (current_resource) |res| {
-            try services.put(name, res);
-        }
-    }
-
-    return services;
-}
-
-/// Parse inline attributes for services
-fn parseServiceInlineAttributes(resource: ServiceResource, attrs_line: []const u8) !ServiceResource {
-    var res = resource;
-
-    if (std.mem.indexOf(u8, attrs_line, ".state")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, ".stopped")) |_| {
-            res.state = .stopped;
-        } else if (std.mem.indexOf(u8, attrs_line, ".running")) |_| {
-            res.state = .running;
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".enabled")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "false")) |_| {
-            res.enabled = false;
-        } else if (std.mem.indexOf(u8, attrs_line, "true")) |_| {
-            res.enabled = true;
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".allow_failure")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "true")) |_| {
-            res.base.allow_failure = true;
-        }
-    }
-
-    return res;
-}
-
-/// Parse result for files section
-const FilesParseResult = struct {
-    files: std.StringHashMap(FileResource),
-    allocated_strings: [][]const u8,
 };
 
-/// Simple parser for files section
-fn parseFilesSimple(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-) !FilesParseResult {
-    var files = std.StringHashMap(FileResource).init(allocator);
-
-    // Track allocated strings
-    var allocated_strings_buffer: [128][]const u8 = undefined;
-    var allocated_strings_count: usize = 0;
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var current_path: ?[]const u8 = null;
-    var current_resource: ?FileResource = null;
-    var in_multiline_content = false;
-
-    // Use a fixed-size buffer for collecting multi-line content
-    var content_buffer: [512][]const u8 = undefined;
-    var content_line_count: usize = 0;
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "//")) {
-            continue;
-        }
-
-        // Handle multi-line content collection
-        if (in_multiline_content) {
-            // Check if this line is the terminating comma
-            // (not a content line starting with \\)
-            if (!std.mem.startsWith(u8, trimmed, "\\\\") and std.mem.indexOf(u8, trimmed, ",") != null) {
-                // End of multi-line content
-                in_multiline_content = false;
-
-                // Join collected lines and track allocation
-                const joined_content = try joinLines(allocator, content_buffer[0..content_line_count]);
-                if (allocated_strings_count < allocated_strings_buffer.len) {
-                    allocated_strings_buffer[allocated_strings_count] = joined_content;
-                    allocated_strings_count += 1;
-                }
-                current_resource.?.content = joined_content;
-                content_line_count = 0;
-                continue;
-            }
-
-            // Collect multi-line content (strip \\ prefix and leading whitespace)
-            if (std.mem.startsWith(u8, trimmed, "\\\\")) {
-                const line_content = std.mem.trimStart(u8, trimmed[2..], " \t");
-                if (content_line_count < content_buffer.len) {
-                    content_buffer[content_line_count] = line_content;
-                    content_line_count += 1;
-                }
-            }
-            continue;
-        }
-
-        // Check if this is a new file entry (starts with .@")
-        if (std.mem.indexOf(u8, trimmed, ".@\"")) |_| {
-            // Save previous entry if exists
-            if (current_path) |path| {
-                if (current_resource) |res| {
-                    try files.put(path, res);
-                }
-            }
-
-            // Extract path
-            const start = std.mem.indexOf(u8, trimmed, "\"").? + 1;
-            const end = std.mem.indexOfPos(u8, trimmed, start, "\"").?;
-            const path = trimmed[start..end];
-
-            current_path = path;
-            current_resource = FileResource{ .path = path };
-
-            // Check for inline attributes on the same line
-            if (std.mem.indexOf(u8, trimmed, ".{")) |brace_pos| {
-                const inline_attrs = trimmed[brace_pos..];
-                current_resource = try parseFileInlineAttributes(current_resource.?, inline_attrs);
-            }
-        } else if (current_resource != null) {
-            // Parse attributes
-            if (std.mem.indexOf(u8, trimmed, ".content")) |_| {
-                // Check for inline quoted content
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.content = trimmed[start..quote_end];
-                    }
-                } else {
-                    // Check if next line starts multi-line content
-                    // We'll detect \\ on the next iteration
-                    in_multiline_content = true;
-                    content_line_count = 0;
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".source")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.source = trimmed[start..quote_end];
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".mode")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "0o")) |mode_start| {
-                    const mode_end = mode_start + 5; // 0o### format
-                    if (mode_end <= trimmed.len) {
-                        const mode_str = trimmed[mode_start + 2 .. mode_end];
-                        const mode = std.fmt.parseInt(u32, mode_str, 8) catch 0o644;
-                        current_resource.?.mode = mode;
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".state")) |_| {
-                if (std.mem.indexOf(u8, trimmed, ".absent")) |_| {
-                    current_resource.?.state = .absent;
-                } else {
-                    current_resource.?.state = .present;
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".owner")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.owner = trimmed[start..quote_end];
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".group")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "\"")) |quote_start| {
-                    const start = quote_start + 1;
-                    if (std.mem.indexOfPos(u8, trimmed, start, "\"")) |quote_end| {
-                        current_resource.?.group = trimmed[start..quote_end];
-                    }
-                }
-            } else if (std.mem.indexOf(u8, trimmed, ".allow_failure")) |_| {
-                if (std.mem.indexOf(u8, trimmed, "true")) |_| {
-                    current_resource.?.base.allow_failure = true;
-                }
-            }
-        }
-    }
-
-    // Save last entry
-    if (current_path) |path| {
-        if (current_resource) |res| {
-            try files.put(path, res);
-        }
-    }
-
-    // Copy allocated strings to a properly-sized slice
-    var allocated_strings_slice: [][]const u8 = undefined;
-    if (allocated_strings_count > 0) {
-        allocated_strings_slice = try allocator.alloc([]const u8, allocated_strings_count);
-        @memcpy(allocated_strings_slice, allocated_strings_buffer[0..allocated_strings_count]);
-    } else {
-        allocated_strings_slice = &[_][]const u8{};
-    }
-
-    return FilesParseResult{
-        .files = files,
-        .allocated_strings = allocated_strings_slice,
-    };
-}
-
-/// Parse inline attributes for files (attributes on the same line as the file)
-fn parseFileInlineAttributes(resource: FileResource, attrs_line: []const u8) !FileResource {
-    var res = resource;
-
-    if (std.mem.indexOf(u8, attrs_line, ".content")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.content = attrs_line[start..quote_end];
-            }
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".source")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.source = attrs_line[start..quote_end];
-            }
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".mode")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "0o")) |mode_start| {
-            const mode_end = mode_start + 5; // 0o### format
-            if (mode_end <= attrs_line.len) {
-                const mode_str = attrs_line[mode_start + 2 .. mode_end];
-                const mode = std.fmt.parseInt(u32, mode_str, 8) catch 0o644;
-                res.mode = mode;
-            }
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".state")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, ".absent")) |_| {
-            res.state = .absent;
-        } else {
-            res.state = .present;
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".owner")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.owner = attrs_line[start..quote_end];
-            }
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".group")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "\"")) |quote_start| {
-            const start = quote_start + 1;
-            if (std.mem.indexOfPos(u8, attrs_line, start, "\"")) |quote_end| {
-                res.group = attrs_line[start..quote_end];
-            }
-        }
-    }
-
-    if (std.mem.indexOf(u8, attrs_line, ".allow_failure")) |_| {
-        if (std.mem.indexOf(u8, attrs_line, "true")) |_| {
-            res.base.allow_failure = true;
-        }
-    }
-
-    return res;
-}
-
-/// Join multiple lines with Unix newlines
-fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]const u8 {
-    if (lines.len == 0) return "";
-    if (lines.len == 1) return lines[0];
-
-    // Calculate total size needed (lines + newlines between them)
-    var total_size: usize = 0;
-    for (lines) |line| {
-        total_size += line.len;
-    }
-    total_size += lines.len - 1; // Add newlines between lines
-
-    // Allocate and build result
-    var result = try allocator.alloc(u8, total_size);
-    var pos: usize = 0;
-
-    for (lines, 0..) |line, i| {
-        @memcpy(result[pos .. pos + line.len], line);
-        pos += line.len;
-        if (i < lines.len - 1) {
-            result[pos] = '\n';
-            pos += 1;
-        }
-    }
-
-    return result;
-}
-
 // Tests
+const testing = std.testing;
+
+/// Parse content that must be rejected; return the message
+fn expectInvalid(content: []const u8) ![]u8 {
+    var message: ?[]u8 = null;
+    var manifest = parseReporting(testing.allocator, content, "m.zon", &message) catch |err| {
+        try testing.expectEqual(error.InvalidManifest, err);
+        return message orelse error.NoMessage;
+    };
+    manifest.deinit();
+    return error.ExpectedInvalidManifest;
+}
+
+fn expectInvalidWith(content: []const u8, needle: []const u8) !void {
+    const message = try expectInvalid(content);
+    defer testing.allocator.free(message);
+    if (std.mem.indexOf(u8, message, needle) == null) {
+        std.debug.print("message: {s}\nexpected to contain: {s}\n", .{ message, needle });
+        return error.TestUnexpectedMessage;
+    }
+}
+
 test "parse empty manifest" {
-    const content =
-        \\.{}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
+    var manifest = try parse(testing.allocator, ".{}");
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.directories == null);
+    try testing.expect(manifest.package_cache == null);
+    try testing.expectEqual(0, manifest.directories.len);
+    try testing.expectEqual(0, manifest.files.len);
+    try testing.expectEqual(0, manifest.packages.len);
+    try testing.expectEqual(0, manifest.services.len);
 }
 
-test "parse manifest with single directory" {
+test "parse empty sections" {
+    var manifest = try parse(testing.allocator, ".{ .directories = .{}, .services = .{} }");
+    defer manifest.deinit();
+    try testing.expectEqual(0, manifest.directories.len);
+}
+
+test "parse directories with defaults and attributes, in manifest order" {
     const content =
         \\.{
         \\    .directories = .{
-        \\        .@"/tmp/test" = .{},
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.directories != null);
-
-    if (manifest.directories) |dirs| {
-        try std.testing.expect(dirs.count() == 1);
-
-        const dir = dirs.get("/tmp/test");
-        try std.testing.expect(dir != null);
-        if (dir) |d| {
-            try std.testing.expect(std.mem.eql(u8, d.path, "/tmp/test"));
-            try std.testing.expect(d.state == .present);
-        }
-    }
-}
-
-test "parse manifest with directory attributes" {
-    const content =
-        \\.{
-        \\    .directories = .{
-        \\        .@"/opt/app" = .{
-        \\            .mode = 0o755,
-        \\            .state = .present,
+        \\        .@"/tmp/z" = .{},
+        \\        .@"/tmp/a" = .{
+        \\            .mode = 0o750,
+        \\            .owner = "www-data",
+        \\            .group = "www-data",
         \\        },
+        \\        .@"/tmp/m" = .{ .state = .absent, .allow_failure = true },
         \\    },
         \\}
     ;
-
-    var manifest = try parse(std.testing.allocator, content);
+    var manifest = try parse(testing.allocator, content);
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.directories != null);
+    const dirs = manifest.directories;
+    try testing.expectEqual(3, dirs.len);
+    try testing.expectEqualStrings("/tmp/z", dirs[0].path);
+    try testing.expectEqualStrings("/tmp/a", dirs[1].path);
+    try testing.expectEqualStrings("/tmp/m", dirs[2].path);
 
-    if (manifest.directories) |dirs| {
-        const dir = dirs.get("/opt/app");
-        try std.testing.expect(dir != null);
-        if (dir) |d| {
-            try std.testing.expect(d.mode != null);
-            if (d.mode) |mode| {
-                try std.testing.expect(mode == 0o755);
-            }
-            try std.testing.expect(d.state == .present);
-        }
-    }
-}
+    try testing.expect(dirs[0].mode == null);
+    try testing.expectEqual(DirectoryResource.DirState.present, dirs[0].state);
+    try testing.expect(!dirs[0].base.allow_failure);
 
-test "parse manifest with multiple directories" {
-    const content =
-        \\.{
-        \\    .directories = .{
-        \\        .@"/tmp/dir1" = .{},
-        \\        .@"/tmp/dir2" = .{ .mode = 0o700 },
-        \\        .@"/tmp/dir3" = .{ .state = .absent },
-        \\    },
-        \\}
-    ;
+    try testing.expectEqual(@as(?u32, 0o750), dirs[1].mode);
+    try testing.expectEqualStrings("www-data", dirs[1].owner.?);
+    try testing.expectEqualStrings("www-data", dirs[1].group.?);
 
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.directories != null);
-
-    if (manifest.directories) |dirs| {
-        try std.testing.expect(dirs.count() == 3);
-        try std.testing.expect(dirs.get("/tmp/dir1") != null);
-        try std.testing.expect(dirs.get("/tmp/dir2") != null);
-        try std.testing.expect(dirs.get("/tmp/dir3") != null);
-
-        // Check mode was parsed
-        if (dirs.get("/tmp/dir2")) |d2| {
-            try std.testing.expect(d2.mode != null);
-            if (d2.mode) |mode| {
-                try std.testing.expect(mode == 0o700);
-            }
-        }
-
-        // Check state was parsed
-        if (dirs.get("/tmp/dir3")) |d3| {
-            try std.testing.expect(d3.state == .absent);
-        }
-    }
+    try testing.expectEqual(DirectoryResource.DirState.absent, dirs[2].state);
+    try testing.expect(dirs[2].base.allow_failure);
 }
 
 test "parse file with multi-line content" {
@@ -957,478 +340,157 @@ test "parse file with multi-line content" {
         \\    .files = .{
         \\        .@"/tmp/test.html" = .{
         \\            .content =
-        \\                \\<!DOCTYPE html>
-        \\                \\<html>
-        \\                \\<body>
-        \\                \\    <h1>Hello</h1>
-        \\                \\</body>
-        \\                \\</html>
+        \\            \\<html>
+        \\            \\    <h1>Hello, world</h1>
+        \\            \\</html>
         \\            ,
         \\            .mode = 0o644,
         \\        },
         \\    },
         \\}
     ;
-
-    var manifest = try parse(std.testing.allocator, content);
+    var manifest = try parse(testing.allocator, content);
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.files != null);
-
-    if (manifest.files) |files| {
-        const file = files.get("/tmp/test.html");
-        try std.testing.expect(file != null);
-        if (file) |f| {
-            try std.testing.expect(f.content != null);
-            if (f.content) |c| {
-                const expected = "<!DOCTYPE html>\n<html>\n<body>\n<h1>Hello</h1>\n</body>\n</html>";
-                try std.testing.expect(std.mem.eql(u8, c, expected));
-            }
-            try std.testing.expect(f.mode != null);
-            if (f.mode) |mode| {
-                try std.testing.expect(mode == 0o644);
-            }
-        }
-    }
+    const file = manifest.files[0];
+    try testing.expectEqualStrings("/tmp/test.html", file.path);
+    // ZON semantics: indentation after \\ is content
+    try testing.expectEqualStrings("<html>\n    <h1>Hello, world</h1>\n</html>", file.content.?);
+    try testing.expectEqual(@as(?u32, 0o644), file.mode);
 }
 
-test "parse file multi-line strips leading whitespace" {
+test "parse file content decodes escapes" {
+    var manifest = try parse(testing.allocator,
+        \\.{ .files = .{ .@"/tmp/x" = .{ .content = "a\n\t\"b\"\x41" } } }
+    );
+    defer manifest.deinit();
+    try testing.expectEqualStrings("a\n\t\"b\"A", manifest.files[0].content.?);
+}
+
+test "parse file with every attribute" {
     const content =
         \\.{
         \\    .files = .{
-        \\        .@"/tmp/test.txt" = .{
-        \\            .content =
-        \\                \\Line 1
-        \\                \\    Line 2 indented
-        \\                \\Line 3
-        \\            ,
-        \\        },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    if (manifest.files) |files| {
-        if (files.get("/tmp/test.txt")) |f| {
-            if (f.content) |c| {
-                const expected = "Line 1\nLine 2 indented\nLine 3";
-                try std.testing.expect(std.mem.eql(u8, c, expected));
-            }
-        }
-    }
-}
-
-test "parse file multi-line with empty lines" {
-    const content =
-        \\.{
-        \\    .files = .{
-        \\        .@"/tmp/test.txt" = .{
-        \\            .content =
-        \\                \\First line
-        \\                \\
-        \\                \\Third line
-        \\            ,
-        \\        },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    if (manifest.files) |files| {
-        if (files.get("/tmp/test.txt")) |f| {
-            if (f.content) |c| {
-                const expected = "First line\n\nThird line";
-                try std.testing.expect(std.mem.eql(u8, c, expected));
-            }
-        }
-    }
-}
-
-test "parse file with inline quoted content still works" {
-    const content =
-        \\.{
-        \\    .files = .{
-        \\        .@"/tmp/test.txt" = .{
-        \\            .content = "inline content",
-        \\            .mode = 0o644,
-        \\        },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.files != null);
-
-    if (manifest.files) |files| {
-        const file = files.get("/tmp/test.txt");
-        try std.testing.expect(file != null);
-        if (file) |f| {
-            try std.testing.expect(f.content != null);
-            if (f.content) |c| {
-                try std.testing.expect(std.mem.eql(u8, c, "inline content"));
-            }
-        }
-    }
-}
-
-test "parse file multi-line with other attributes" {
-    const content =
-        \\.{
-        \\    .files = .{
-        \\        .@"/tmp/test.conf" = .{
-        \\            .content =
-        \\                \\server=localhost
-        \\                \\port=8080
-        \\            ,
+        \\        .@"/etc/app.conf" = .{
+        \\            .source = "/srv/app.conf",
         \\            .mode = 0o600,
         \\            .owner = "root",
+        \\            .group = "0",
+        \\            .allow_failure = true,
         \\        },
+        \\        .@"/etc/old.conf" = .{ .state = .absent },
         \\    },
         \\}
     ;
-
-    var manifest = try parse(std.testing.allocator, content);
+    var manifest = try parse(testing.allocator, content);
     defer manifest.deinit();
 
-    if (manifest.files) |files| {
-        if (files.get("/tmp/test.conf")) |f| {
-            try std.testing.expect(f.content != null);
-            if (f.content) |c| {
-                try std.testing.expect(std.mem.eql(u8, c, "server=localhost\nport=8080"));
-            }
-            try std.testing.expect(f.mode != null);
-            if (f.mode) |mode| {
-                try std.testing.expect(mode == 0o600);
-            }
-            try std.testing.expect(f.owner != null);
-            if (f.owner) |owner| {
-                try std.testing.expect(std.mem.eql(u8, owner, "root"));
-            }
-        }
-    }
+    const files = manifest.files;
+    try testing.expectEqual(2, files.len);
+    try testing.expectEqualStrings("/srv/app.conf", files[0].source.?);
+    try testing.expect(files[0].content == null);
+    try testing.expectEqual(@as(?u32, 0o600), files[0].mode);
+    try testing.expectEqualStrings("root", files[0].owner.?);
+    try testing.expectEqualStrings("0", files[0].group.?);
+    try testing.expect(files[0].base.allow_failure);
+    try testing.expectEqual(FileResource.FileState.absent, files[1].state);
 }
 
-test "parse file multi-line with commas in content" {
-    const content =
-        \\.{
-        \\    .files = .{
-        \\        .@"/tmp/test-comma.html" = .{
-        \\            .content =
-        \\                \\<!DOCTYPE html>
-        \\                \\<html lang="en">
-        \\                \\<head>
-        \\                \\<meta charset="UTF-8">
-        \\                \\<meta name="viewport" content="width=device-width, initial-scale=1.0">
-        \\                \\<title>Test, with, commas</title>
-        \\                \\<style>
-        \\                \\body { font-family: sans-serif; }
-        \\                \\</style>
-        \\                \\</head>
-        \\                \\<body>
-        \\                \\<h1>Hello, world!</h1>
-        \\                \\<p>One, two, three</p>
-        \\                \\</body>
-        \\                \\</html>
-        \\            ,
-        \\        },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    if (manifest.files) |files| {
-        if (files.get("/tmp/test-comma.html")) |f| {
-            try std.testing.expect(f.content != null);
-            if (f.content) |c| {
-                // Should have all 15 lines of content
-                var line_count: usize = 1;
-                for (c) |char| {
-                    if (char == '\n') line_count += 1;
-                }
-                try std.testing.expectEqual(@as(usize, 15), line_count);
-
-                // Verify specific content with commas is present
-                try std.testing.expect(std.mem.indexOf(u8, c, "width=device-width, initial-scale=1.0") != null);
-                try std.testing.expect(std.mem.indexOf(u8, c, "Test, with, commas") != null);
-                try std.testing.expect(std.mem.indexOf(u8, c, "Hello, world!") != null);
-                try std.testing.expect(std.mem.indexOf(u8, c, "One, two, three") != null);
-                try std.testing.expect(std.mem.indexOf(u8, c, "</html>") != null);
-            }
-        }
-    }
-}
-
-test "parse manifest with single package" {
+test "parse packages" {
     const content =
         \\.{
         \\    .packages = .{
         \\        .nginx = .{},
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.packages != null);
-
-    if (manifest.packages) |pkgs| {
-        try std.testing.expect(pkgs.count() == 1);
-
-        const pkg = pkgs.get("nginx");
-        try std.testing.expect(pkg != null);
-        if (pkg) |p| {
-            try std.testing.expect(std.mem.eql(u8, p.name, "nginx"));
-            try std.testing.expect(p.state == .installed); // Default
-            try std.testing.expect(p.version == null);
-        }
-    }
-}
-
-test "parse manifest with multiple packages" {
-    const content =
-        \\.{
-        \\    .packages = .{
-        \\        .nginx = .{},
-        \\        .postgresql = .{ .state = .installed },
+        \\        .@"build-essential" = .{ .version = "12.10" },
         \\        .apache2 = .{ .state = .absent },
         \\    },
         \\}
     ;
-
-    var manifest = try parse(std.testing.allocator, content);
+    var manifest = try parse(testing.allocator, content);
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.packages != null);
-
-    if (manifest.packages) |pkgs| {
-        try std.testing.expect(pkgs.count() == 3);
-
-        if (pkgs.get("nginx")) |p| {
-            try std.testing.expect(p.state == .installed);
-        }
-
-        if (pkgs.get("postgresql")) |p| {
-            try std.testing.expect(p.state == .installed);
-        }
-
-        if (pkgs.get("apache2")) |p| {
-            try std.testing.expect(p.state == .absent);
-        }
-    }
+    const pkgs = manifest.packages;
+    try testing.expectEqual(3, pkgs.len);
+    try testing.expectEqualStrings("nginx", pkgs[0].name);
+    try testing.expectEqual(PackageResource.PackageState.installed, pkgs[0].state);
+    try testing.expectEqualStrings("build-essential", pkgs[1].name);
+    try testing.expectEqualStrings("12.10", pkgs[1].version.?);
+    try testing.expectEqual(PackageResource.PackageState.absent, pkgs[2].state);
 }
 
-test "parse package with version" {
-    const content =
-        \\.{
-        \\    .packages = .{
-        \\        .nginx = .{
-        \\            .version = "1.18.0-1",
-        \\        },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.packages != null);
-
-    if (manifest.packages) |pkgs| {
-        const pkg = pkgs.get("nginx");
-        try std.testing.expect(pkg != null);
-        if (pkg) |p| {
-            try std.testing.expect(p.version != null);
-            if (p.version) |ver| {
-                try std.testing.expect(std.mem.eql(u8, ver, "1.18.0-1"));
-            }
-        }
-    }
-}
-
-test "parse package with hyphenated name" {
-    const content =
-        \\.{
-        \\    .packages = .{
-        \\        .@"build-essential" = .{},
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    if (manifest.packages) |pkgs| {
-        const pkg = pkgs.get("build-essential");
-        try std.testing.expect(pkg != null);
-        if (pkg) |p| {
-            try std.testing.expect(std.mem.eql(u8, p.name, "build-essential"));
-        }
-    }
-}
-
-test "parse manifest with single service" {
+test "parse services" {
     const content =
         \\.{
         \\    .services = .{
         \\        .nginx = .{},
+        \\        .@"systemd-timesyncd" = .{ .state = .stopped, .enabled = false },
         \\    },
         \\}
     ;
-
-    var manifest = try parse(std.testing.allocator, content);
+    var manifest = try parse(testing.allocator, content);
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.services != null);
-
-    if (manifest.services) |svcs| {
-        try std.testing.expect(svcs.count() == 1);
-
-        const svc = svcs.get("nginx");
-        try std.testing.expect(svc != null);
-        if (svc) |s| {
-            try std.testing.expect(std.mem.eql(u8, s.name, "nginx"));
-            try std.testing.expect(s.state == .running); // Default
-            try std.testing.expect(s.enabled == true); // Default
-        }
-    }
+    const svcs = manifest.services;
+    try testing.expectEqualStrings("nginx", svcs[0].name);
+    try testing.expectEqual(ServiceResource.ServiceState.running, svcs[0].state);
+    try testing.expect(svcs[0].enabled);
+    try testing.expectEqualStrings("systemd-timesyncd", svcs[1].name);
+    try testing.expectEqual(ServiceResource.ServiceState.stopped, svcs[1].state);
+    try testing.expect(!svcs[1].enabled);
 }
 
-test "parse manifest with multiple services" {
-    const content =
-        \\.{
-        \\    .services = .{
-        \\        .nginx = .{},
-        \\        .postgresql = .{ .state = .running },
-        \\        .apache2 = .{ .state = .stopped, .enabled = false },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.services != null);
-
-    if (manifest.services) |svcs| {
-        try std.testing.expect(svcs.count() == 3);
-
-        if (svcs.get("nginx")) |s| {
-            try std.testing.expect(s.state == .running);
-            try std.testing.expect(s.enabled == true);
-        }
-
-        if (svcs.get("postgresql")) |s| {
-            try std.testing.expect(s.state == .running);
-            try std.testing.expect(s.enabled == true);
-        }
-
-        if (svcs.get("apache2")) |s| {
-            try std.testing.expect(s.state == .stopped);
-            try std.testing.expect(s.enabled == false);
-        }
+test "parse package_cache and its apt_update alias" {
+    for ([_][]const u8{ ".{ .package_cache = .{} }", ".{ .apt_update = .{} }" }) |content| {
+        var manifest = try parse(testing.allocator, content);
+        defer manifest.deinit();
+        try testing.expect(manifest.package_cache != null);
+        try testing.expectEqualStrings("update", manifest.package_cache.?.name);
     }
+
+    var manifest = try parse(testing.allocator, ".{ .package_cache = .{ .allow_failure = true } }");
+    defer manifest.deinit();
+    try testing.expect(manifest.package_cache.?.base.allow_failure);
 }
 
-test "parse service with custom state and enabled" {
-    const content =
-        \\.{
-        \\    .services = .{
-        \\        .nginx = .{
-        \\            .state = .stopped,
-        \\            .enabled = false,
-        \\        },
-        \\    },
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    if (manifest.services) |svcs| {
-        if (svcs.get("nginx")) |s| {
-            try std.testing.expect(s.state == .stopped);
-            try std.testing.expect(s.enabled == false);
-        }
-    }
+test "reject package_cache given twice" {
+    try expectInvalidWith(".{ .package_cache = .{}, .apt_update = .{} }", "given twice");
 }
 
-test "parse service with hyphenated name" {
-    const content =
+test "reject unknown section" {
+    try expectInvalidWith(
         \\.{
-        \\    .services = .{
-        \\        .@"my-service" = .{},
-        \\    },
+        \\    .files = .{},
+        \\    .users = .{ .deployer = .{} },
         \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    if (manifest.services) |svcs| {
-        const svc = svcs.get("my-service");
-        try std.testing.expect(svc != null);
-        if (svc) |s| {
-            try std.testing.expect(std.mem.eql(u8, s.name, "my-service"));
-        }
-    }
+    , "m.zon:3:6: error: unknown section '.users'");
+    try expectInvalidWith(".{ .servics = .{} }", "unknown section '.servics'");
 }
 
-test "parse manifest with package_cache" {
-    const content =
-        \\.{
-        \\    .package_cache = .{},
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.package_cache != null);
+test "reject unknown attribute" {
+    try expectInvalidWith(
+        \\.{ .directories = .{ .@"/tmp/x" = .{ .mdoe = 0o755 } } }
+    , "mdoe");
 }
 
-test "parse manifest with apt_update alias" {
-    const content =
-        \\.{
-        \\    .apt_update = .{},
-        \\}
-    ;
-
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
-
-    try std.testing.expect(manifest.package_cache != null);
-
-    if (manifest.package_cache) |apt| {
-        try std.testing.expect(std.mem.eql(u8, apt.name, "update"));
-    }
+test "reject wrong attribute type" {
+    try expectInvalidWith(".{ .files = .{ .@\"/tmp/x\" = .{ .mode = \"0644\" } } }", "m.zon:1:");
+    try expectInvalidWith(".{ .services = .{ .nginx = .{ .state = .started } } }", "m.zon:1:");
 }
 
-test "parse manifest with apt_update and packages" {
-    const content =
-        \\.{
-        \\    .apt_update = .{},
-        \\    .packages = .{
-        \\        .nginx = .{},
-        \\    },
-        \\}
-    ;
+test "reject relative paths" {
+    try expectInvalidWith(".{ .files = .{ .@\"etc/x\" = .{} } }", "'etc/x' is not an absolute path");
+}
 
-    var manifest = try parse(std.testing.allocator, content);
-    defer manifest.deinit();
+test "reject syntax errors" {
+    try expectInvalidWith(".{ .files = .{ .@\"/tmp/x\" = .{ .mode = 0o644 } }", "m.zon:");
+    try expectInvalidWith(".{ .files = .{}, .files = .{} }", "m.zon:");
+}
 
-    try std.testing.expect(manifest.package_cache != null);
-    try std.testing.expect(manifest.packages != null);
+test "reject a root that is not a struct" {
+    try expectInvalidWith("\"hello\"", "a manifest is a struct literal");
+    try expectInvalidWith(".{ .packages = \"nginx\" }", "expected .{");
+}
 
-    if (manifest.package_cache) |apt| {
-        try std.testing.expect(std.mem.eql(u8, apt.name, "update"));
-    }
+test "plain parse frees the message" {
+    try testing.expectError(error.InvalidManifest, parse(testing.allocator, ".{ .users = .{} }"));
 }

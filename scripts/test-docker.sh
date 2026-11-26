@@ -88,8 +88,8 @@ info "Applying test manifest (first run)..."
 if docker run --rm -v "$(pwd)":/workspace accord-test:debian bash -c "./zig-out/bin/accord apply test/fixtures/debian-test.zon --log-level=verbose"; then
     success "Test manifest applied successfully"
 else
-    warning "Test manifest application had issues (this may be due to HashMap ordering)"
-    echo "   This is a known limitation - resources are not guaranteed to be in order"
+    error "Test manifest application failed"
+    exit 1
 fi
 echo ""
 

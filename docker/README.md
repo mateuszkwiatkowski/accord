@@ -144,11 +144,9 @@ Look for output showing:
 
 The Debian test manifest (`test/fixtures/debian-test.zon`) creates:
 
-- `/tmp/accord-docker-test/` - Parent directory (mode 0755)
-- `/tmp/accord-docker-test/subdir/` - Subdirectory (mode 0750)
-- `/tmp/accord-docker-test/logs/` - Logs directory (mode 0700)
-
-**Known Issue**: Due to HashMap ordering, subdirectories may fail if the parent directory is not created first. This is a documented limitation that will be addressed in a future version.
+- `/tmp/accord-docker-test-1/` (mode 0755)
+- `/tmp/accord-docker-test-2/` (mode 0750)
+- `/tmp/accord-docker-test-3/` (mode 0700)
 
 ## Automated Test Script
 
@@ -196,14 +194,6 @@ To upgrade Zig, update `ZIG_VERSION` and both `ZIG_SHA256_*` build args (checksu
 1. Check internet connection
 2. Verify Zig download URL is correct
 3. Check if ziglang.org is accessible
-
-### Tests fail with "No such file or directory"
-
-**Cause**: HashMap ordering issue with subdirectories
-
-**This is expected behavior**. The test manifest includes subdirectories which may fail if the parent directory is not created first. This documents the known limitation.
-
-**Solution**: Reorder resources in manifest (parent directories first) or wait for future fix using ArrayList instead of HashMap.
 
 ### Permission denied errors
 

@@ -87,8 +87,14 @@ pub fn main(init: std.process.Init) !void {
 
     // Parse manifest
     output.logDebug("Parsing manifest...");
-    var manifest = parser.parse(allocator, manifest_content) catch |err| {
-        std.debug.print("Error: Failed to parse manifest: {s}\n", .{@errorName(err)});
+    var parse_message: ?[]u8 = null;
+    defer if (parse_message) |m| allocator.free(m);
+    var manifest = parser.parseReporting(allocator, manifest_content, manifest_path.?, &parse_message) catch |err| {
+        if (parse_message) |m| {
+            std.debug.print("{s}\n", .{m});
+        } else {
+            std.debug.print("Error: Failed to parse manifest: {s}\n", .{@errorName(err)});
+        }
         std.process.exit(2);
     };
     defer manifest.deinit();

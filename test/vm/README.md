@@ -66,7 +66,7 @@ As of 2026-11-26, every cell passes. Treat any `FAIL` as a regression:
 | FreeBSD 15.1 | PASS | PASS | PASS | PASS | PASS | PASS |
 
 On Debian and Ubuntu the unit tests include the apt/dpkg/systemd integration
-tests (108 run); elsewhere those 4 skip.
+tests; elsewhere those 4 skip.
 
 ## Adding an OS
 
