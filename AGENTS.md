@@ -68,7 +68,7 @@ accord/
 │   ├── database.zon
 │   └── docker-host.zon
 ├── build.zig                 # Build configuration
-├── build.zig.zon             # Package dependencies (pinned Zig version)
+├── build.zig.zon             # Package metadata, minimum_zig_version
 ├── AGENTS.md                 # This file
 ├── README.md                 # User-facing documentation
 ├── LICENSE                   # MIT license
@@ -1070,6 +1070,22 @@ accord apply manifest.zon  # Should be all "already satisfied"
 
 ---
 
+## Toolchain
+
+Zig **0.17.1**, pinned in `mise.toml` (`mise install`), `build.zig.zon` (`minimum_zig_version`) and `docker/Dockerfile.debian` (`ZIG_VERSION` + per-arch SHA-256). Bump all three together. The code snippets elsewhere in this file predate 0.17 and are illustrative; `src/` is the source of truth for current std APIs.
+
+0.17 idioms this codebase relies on:
+
+- **`Io` comes from `SystemInfo`**: `main(init: std.process.Init)` receives `init.io`, stores it in `SystemInfo.io`; resources use `sys.io` for all filesystem (`std.Io.Dir.*Absolute(io, ...)`) and process (`std.process.spawn(io, ...)`, `std.process.run(gpa, io, ...)`) calls.
+- **Tests** build `SystemInfo` literals with `.io = std.testing.io` and use `std.testing.io` for fixture file operations.
+- **libc via `std.c`**: `@cImport` no longer exists. `utils.zig` calls `std.c.getpwnam`/`getgrnam`/`stat`/`fchownat` directly (`link_libc = true` in `build.zig`). `chown` stays on libc because `std.Io.Dir.setFileOwner` panics with "TODO" in 0.17.1; `std.Io.File.Stat` exposes no uid/gid.
+- **Mode bits**: `stat.permissions.toMode()`, `File.Permissions.fromMode(mode)`.
+
+Testing environments:
+
+- On macOS 27+, Zig 0.15.x cannot link its build runner; only 0.17+ builds on the host.
+- Building the 0.17 build runner peaks above 1.5 GB RSS; in a 2 GB podman/Docker VM without swap the `zig` process is OOM-killed (looks like a hang, then exit 137). Give the VM more memory.
+
 ## Code Patterns and Idioms
 
 ### Error Handling
@@ -1094,11 +1110,9 @@ pub fn doSomething() !void {
 Use arena allocator for request-scoped allocations:
 
 ```zig
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
@@ -1153,7 +1167,7 @@ defer allocator.free(msg);
 - ✓ Service resource (systemd support, state and enabled management)
 - [ ] User resource (pending)
 - [ ] Group resource (pending)
-- ✓ Unit and integration tests (81 tests passing)
+- ✓ Unit and integration tests (99 tests)
 - ✓ CLI with proper flags and exit codes
 
 ### Phase 2: Platform Expansion
@@ -1234,6 +1248,7 @@ git checkout -b feature/new-resource
 
 ### 3. Test
 ```bash
+mise install                           # Pinned Zig toolchain
 zig build test                          # Unit tests
 zig build -Doptimize=ReleaseSafe       # Build
 ./zig-out/bin/accord --version         # Smoke test

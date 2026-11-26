@@ -1,0 +1,15 @@
+.{
+    .name = .accord,
+    .version = "0.1.0",
+    .fingerprint = 0x91361a045d56ac0a,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "doc",
+        "LICENSE",
+        "README.md",
+    },
+}

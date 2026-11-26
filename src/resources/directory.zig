@@ -4,11 +4,6 @@ const system = @import("../system.zig");
 const output = @import("../output.zig");
 const utils = @import("../utils.zig");
 
-// Import C chmod function for setting directory permissions
-const c = @cImport({
-    @cInclude("sys/stat.h");
-});
-
 /// Directory resource - manage directory creation, permissions, and ownership
 pub const DirectoryResource = struct {
     base: resource.ResourceBase = .{},
@@ -23,10 +18,10 @@ pub const DirectoryResource = struct {
 
     /// Check if directory is in desired state
     pub fn check(self: *DirectoryResource, sys: *const system.SystemInfo) !resource.ResourceState {
-        _ = sys; // May need for platform-specific checks in the future
+        const io = sys.io;
 
         // Try to open directory
-        var dir = std.fs.openDirAbsolute(self.path, .{}) catch |err| {
+        var dir = std.Io.Dir.openDirAbsolute(io, self.path, .{}) catch |err| {
             return switch (err) {
                 error.FileNotFound => if (self.state == .absent)
                     .satisfied
@@ -39,7 +34,7 @@ pub const DirectoryResource = struct {
                 },
             };
         };
-        defer dir.close();
+        defer dir.close(io);
 
         // Directory exists
         if (self.state == .absent) {
@@ -48,8 +43,8 @@ pub const DirectoryResource = struct {
 
         // Check mode if specified
         if (self.mode) |desired_mode| {
-            const stat = try dir.stat();
-            const actual_mode = stat.mode & 0o777;
+            const stat = try dir.stat(io);
+            const actual_mode = stat.permissions.toMode() & 0o777;
             if (actual_mode != desired_mode) {
                 output.logDebug("Directory mode mismatch");
                 return .needs_change;
@@ -93,7 +88,7 @@ pub const DirectoryResource = struct {
 
     /// Apply changes to bring directory to desired state
     pub fn apply(self: *DirectoryResource, sys: *const system.SystemInfo, dry_run: bool) !resource.ResourceResult {
-        _ = sys; // May need for platform-specific operations
+        const io = sys.io;
 
         output.logDebug(if (dry_run) "DRY RUN mode enabled" else "Normal mode");
 
@@ -109,7 +104,7 @@ pub const DirectoryResource = struct {
         switch (self.state) {
             .absent => {
                 // Remove directory
-                std.fs.deleteDirAbsolute(self.path) catch |err| {
+                std.Io.Dir.deleteDirAbsolute(io, self.path) catch |err| {
                     const err_msg = std.fmt.allocPrint(
                         std.heap.page_allocator,
                         "Failed to remove directory: {s}",
@@ -127,7 +122,7 @@ pub const DirectoryResource = struct {
             },
             .present => {
                 // Create directory (recursive)
-                std.fs.makeDirAbsolute(self.path) catch |err| {
+                std.Io.Dir.createDirAbsolute(io, self.path, .default_dir) catch |err| {
                     if (err != error.PathAlreadyExists) {
                         const err_msg = std.fmt.allocPrint(
                             std.heap.page_allocator,
@@ -142,15 +137,7 @@ pub const DirectoryResource = struct {
                 // Set mode if specified
                 if (self.mode) |mode| {
                     // Note: Can't use fchmod on directory fd on Linux, must use chmod with path
-                    // Convert path to null-terminated for C call
-                    const allocator = std.heap.page_allocator;
-                    const path_z = try allocator.dupeZ(u8, self.path);
-                    defer allocator.free(path_z);
-
-                    const result = c.chmod(path_z.ptr, @intCast(mode));
-                    if (result != 0) {
-                        return error.ChmodFailed;
-                    }
+                    try utils.chmod(io, self.path, mode);
                 }
 
                 // Set owner/group if specified
@@ -215,7 +202,7 @@ test "DirectoryResource check on missing directory" {
     const test_path = "/tmp/accord-test-missing-dir-check";
 
     // Ensure it doesn't exist
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -226,6 +213,7 @@ test "DirectoryResource check on missing directory" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const state = try dir.check(&sys);
@@ -236,7 +224,7 @@ test "DirectoryResource apply creates directory" {
     const test_path = "/tmp/accord-test-apply-create";
 
     // Ensure it doesn't exist
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -247,6 +235,7 @@ test "DirectoryResource apply creates directory" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try dir.apply(&sys, false);
@@ -254,18 +243,18 @@ test "DirectoryResource apply creates directory" {
     try std.testing.expect(result.state == .satisfied);
 
     // Verify directory exists
-    var opened_dir = try std.fs.openDirAbsolute(test_path, .{});
-    opened_dir.close();
+    var opened_dir = try std.Io.Dir.openDirAbsolute(std.testing.io, test_path, .{});
+    opened_dir.close(std.testing.io);
 
     // Cleanup
-    try std.fs.deleteDirAbsolute(test_path);
+    try std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path);
 }
 
 test "DirectoryResource apply removes directory" {
     const test_path = "/tmp/accord-test-apply-remove";
 
     // Create directory first
-    std.fs.makeDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -276,6 +265,7 @@ test "DirectoryResource apply removes directory" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try dir.apply(&sys, false);
@@ -283,7 +273,7 @@ test "DirectoryResource apply removes directory" {
     try std.testing.expect(result.state == .satisfied);
 
     // Verify directory doesn't exist
-    const open_result = std.fs.openDirAbsolute(test_path, .{});
+    const open_result = std.Io.Dir.openDirAbsolute(std.testing.io, test_path, .{});
     try std.testing.expectError(error.FileNotFound, open_result);
 }
 
@@ -291,7 +281,7 @@ test "DirectoryResource idempotency" {
     const test_path = "/tmp/accord-test-idempotent";
 
     // Cleanup first
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -302,6 +292,7 @@ test "DirectoryResource idempotency" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // First apply - should create
@@ -313,14 +304,14 @@ test "DirectoryResource idempotency" {
     try std.testing.expect(check_result == .satisfied);
 
     // Cleanup
-    try std.fs.deleteDirAbsolute(test_path);
+    try std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path);
 }
 
 test "DirectoryResource dry run doesn't create" {
     const test_path = "/tmp/accord-test-dryrun";
 
     // Ensure it doesn't exist
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -331,6 +322,7 @@ test "DirectoryResource dry run doesn't create" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // Apply with dry_run = true
@@ -338,14 +330,14 @@ test "DirectoryResource dry run doesn't create" {
     try std.testing.expect(result.changed == true);
 
     // Verify directory was NOT created
-    const open_result = std.fs.openDirAbsolute(test_path, .{});
+    const open_result = std.Io.Dir.openDirAbsolute(std.testing.io, test_path, .{});
     try std.testing.expectError(error.FileNotFound, open_result);
 }
 
 test "DirectoryResource check - owner matches" {
     const test_path = "/tmp/accord-test-owner-check";
-    std.fs.makeDirAbsolute(test_path) catch {};
-    defer std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     // Get current user's ownership
     const ownership = try utils.getFileOwnership(test_path);
@@ -363,6 +355,7 @@ test "DirectoryResource check - owner matches" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // Should be satisfied since we're using the current owner
@@ -372,8 +365,8 @@ test "DirectoryResource check - owner matches" {
 
 test "DirectoryResource apply - sets owner by name" {
     const test_path = "/tmp/accord-test-owner-apply";
-    std.fs.makeDirAbsolute(test_path) catch {};
-    defer std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     // Get current ownership (will be reused)
     const original = try utils.getFileOwnership(test_path);
@@ -392,6 +385,7 @@ test "DirectoryResource apply - sets owner by name" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try dir.apply(&sys, false);
@@ -405,8 +399,8 @@ test "DirectoryResource apply - sets owner by name" {
 
 test "DirectoryResource apply - sets owner by UID" {
     const test_path = "/tmp/accord-test-owner-uid";
-    std.fs.makeDirAbsolute(test_path) catch {};
-    defer std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     // Get current ownership and set to same (no-op but tests the function)
     const original = try utils.getFileOwnership(test_path);
@@ -422,6 +416,7 @@ test "DirectoryResource apply - sets owner by UID" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try dir.apply(&sys, false);
@@ -433,8 +428,8 @@ test "DirectoryResource apply - sets owner by UID" {
 
 test "DirectoryResource apply - owner only leaves group unchanged" {
     const test_path = "/tmp/accord-test-owner-only";
-    std.fs.makeDirAbsolute(test_path) catch {};
-    defer std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     // Get original ownership
     const original = try utils.getFileOwnership(test_path);
@@ -451,6 +446,7 @@ test "DirectoryResource apply - owner only leaves group unchanged" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     _ = try dir.apply(&sys, false);
@@ -459,13 +455,13 @@ test "DirectoryResource apply - owner only leaves group unchanged" {
     try std.testing.expectEqual(original.uid, after.uid);
     try std.testing.expectEqual(original.gid, after.gid); // Group unchanged
 
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 }
 
 test "DirectoryResource check - group matches" {
     const test_path = "/tmp/accord-test-group-check";
-    std.fs.makeDirAbsolute(test_path) catch {};
-    defer std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -476,6 +472,7 @@ test "DirectoryResource check - group matches" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const state = try dir.check(&sys);
@@ -484,8 +481,8 @@ test "DirectoryResource check - group matches" {
 
 test "DirectoryResource apply - sets group by GID" {
     const test_path = "/tmp/accord-test-group-gid";
-    std.fs.makeDirAbsolute(test_path) catch {};
-    defer std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.createDirAbsolute(std.testing.io, test_path, .default_dir) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     var dir = DirectoryResource{
         .path = test_path,
@@ -496,6 +493,7 @@ test "DirectoryResource apply - sets group by GID" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try dir.apply(&sys, false);

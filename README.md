@@ -29,6 +29,9 @@ accord brings your system into accord with declarative manifests. Simple binary,
 git clone https://github.com/mateuszkwiatkowski/accord
 cd accord
 
+# Install the pinned Zig toolchain (optional, see mise.toml)
+mise install
+
 # Build
 zig build -Doptimize=ReleaseSafe
 
@@ -36,7 +39,7 @@ zig build -Doptimize=ReleaseSafe
 sudo cp zig-out/bin/accord /usr/local/bin/
 ```
 
-**Requirements**: Zig 0.11.0 or later
+**Requirements**: Zig 0.17.1 (pinned in `mise.toml`; [mise](https://mise.jdx.dev) installs it automatically)
 
 ### Your First Manifest
 
@@ -714,6 +717,9 @@ Contributions are welcome! accord is designed for extensibility.
 # Clone
 git clone https://github.com/mateuszkwiatkowski/accord
 cd accord
+
+# Install the pinned Zig toolchain
+mise install
 
 # Build
 zig build

@@ -22,11 +22,7 @@ pub const AptUpdateResource = struct {
     }
 
     pub fn apply(self: *AptUpdateResource, sys: *const system.SystemInfo, dry_run: bool) !resource.ResourceResult {
-        _ = sys;
-
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
+        const io = sys.io;
 
         if (dry_run) {
             output.logApply("AptUpdate", self.name, "would update cache");
@@ -38,14 +34,14 @@ pub const AptUpdateResource = struct {
 
         // Execute apt-get update
         const args = [_][]const u8{ "apt-get", "update" };
-        var child = std.process.Child.init(&args, allocator);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Inherit; // Let stderr pass through directly
+        var child = try std.process.spawn(io, .{
+            .argv = &args,
+            .stdout = .ignore,
+            .stderr = .inherit, // Let stderr pass through directly
+        });
+        const term = try child.wait(io);
 
-        try child.spawn();
-        const term = try child.wait();
-
-        if (term != .Exited or term.Exited != 0) {
+        if (!term.success()) {
             // Log simple error message
             output.logError("AptUpdate", self.name, "apt-get update failed");
             return error.AptUpdateFailed;
@@ -73,6 +69,7 @@ test "AptUpdateResource check - not apt system" {
         .os_family = .debian,
         .pkg_manager = .yum, // Wrong package manager
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = apt_upd.check(&sys_info);
@@ -86,6 +83,7 @@ test "AptUpdateResource check - apt system always needs change" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const state = try apt_upd.check(&sys_info);
@@ -112,6 +110,7 @@ test "AptUpdateResource apply - dry run" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = try apt_upd.apply(&sys_info, true);
@@ -122,14 +121,13 @@ test "AptUpdateResource apply - dry run" {
 // Integration test - only runs if apt-get is available
 test "AptUpdateResource apply - real update" {
     // Check if apt-get is available
-    const check_apt = std.process.Child.run(.{
-        .allocator = testing.allocator,
+    const check_apt = std.process.run(testing.allocator, testing.io, .{
         .argv = &[_][]const u8{ "which", "apt-get" },
     }) catch return error.SkipZigTest;
     defer testing.allocator.free(check_apt.stdout);
     defer testing.allocator.free(check_apt.stderr);
 
-    if (check_apt.term.Exited != 0) {
+    if (!check_apt.term.success()) {
         return error.SkipZigTest;
     }
 
@@ -139,6 +137,7 @@ test "AptUpdateResource apply - real update" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     // This will actually run apt-get update

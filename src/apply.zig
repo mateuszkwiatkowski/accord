@@ -287,9 +287,7 @@ pub fn applyManifest(
 
 // Tests
 test "apply empty manifest" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.testing.allocator;
 
     var manifest = parser.Manifest.init(allocator);
     defer manifest.deinit();
@@ -298,6 +296,7 @@ test "apply empty manifest" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try applyManifest(&manifest, &sys, false);
@@ -308,14 +307,12 @@ test "apply empty manifest" {
 }
 
 test "apply manifest with one directory" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.testing.allocator;
 
     const test_path = "/tmp/accord-apply-test";
 
     // Cleanup first
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     const content =
         \\.{
@@ -334,6 +331,7 @@ test "apply manifest with one directory" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try applyManifest(&manifest, &sys, false);
@@ -343,22 +341,20 @@ test "apply manifest with one directory" {
     try std.testing.expect(result.failed == 0);
 
     // Verify directory was created
-    var dir = try std.fs.openDirAbsolute(test_path, .{});
-    dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(std.testing.io, test_path, .{});
+    dir.close(std.testing.io);
 
     // Cleanup
-    try std.fs.deleteDirAbsolute(test_path);
+    try std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path);
 }
 
 test "apply manifest idempotency" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.testing.allocator;
 
     const test_path = "/tmp/accord-apply-idempotent";
 
     // Cleanup first
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     const content =
         \\.{
@@ -375,6 +371,7 @@ test "apply manifest idempotency" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // First apply - should create
@@ -387,18 +384,16 @@ test "apply manifest idempotency" {
     try std.testing.expect(result2.applied == 0);
 
     // Cleanup
-    try std.fs.deleteDirAbsolute(test_path);
+    try std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path);
 }
 
 test "apply manifest with dry run" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.testing.allocator;
 
     const test_path = "/tmp/accord-apply-dryrun";
 
     // Ensure doesn't exist
-    std.fs.deleteDirAbsolute(test_path) catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, test_path) catch {};
 
     const content =
         \\.{
@@ -415,6 +410,7 @@ test "apply manifest with dry run" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // Apply with dry_run = true
@@ -422,14 +418,12 @@ test "apply manifest with dry run" {
     try std.testing.expect(result.applied == 1);
 
     // Verify directory was NOT created
-    const open_result = std.fs.openDirAbsolute(test_path, .{});
+    const open_result = std.Io.Dir.openDirAbsolute(std.testing.io, test_path, .{});
     try std.testing.expectError(error.FileNotFound, open_result);
 }
 
 test "apply manifest with allow_failure" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.testing.allocator;
 
     // Use a path that will fail (permission denied or doesn't exist)
     const content =
@@ -450,6 +444,7 @@ test "apply manifest with allow_failure" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // Should not error even though first directory fails
@@ -457,5 +452,5 @@ test "apply manifest with allow_failure" {
     try std.testing.expect(result.total == 2);
 
     // Cleanup success directory
-    std.fs.deleteDirAbsolute("/tmp/accord-test-success") catch {};
+    std.Io.Dir.deleteDirAbsolute(std.testing.io, "/tmp/accord-test-success") catch {};
 }

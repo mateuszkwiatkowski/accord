@@ -13,39 +13,35 @@ pub const ServiceResource = struct {
 
     pub fn check(self: *ServiceResource, sys: *const system.SystemInfo) !resource.ResourceState {
         return switch (sys.init_system orelse return error.NoInitSystem) {
-            .systemd => try self.checkSystemd(),
+            .systemd => try self.checkSystemd(sys.io),
             else => error.UnsupportedInitSystem,
         };
     }
 
-    fn checkSystemd(self: *ServiceResource) !resource.ResourceState {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
+    fn checkSystemd(self: *ServiceResource, io: std.Io) !resource.ResourceState {
         // Check if service is running
         // systemctl is-active returns 0 if active, non-zero otherwise
         const is_active_args = [_][]const u8{ "systemctl", "is-active", self.name };
 
-        var is_active_child = std.process.Child.init(&is_active_args, allocator);
-        is_active_child.stdout_behavior = .Ignore;
-        is_active_child.stderr_behavior = .Ignore;
-
-        try is_active_child.spawn();
-        const is_active_term = try is_active_child.wait();
-        const is_running = (is_active_term == .Exited and is_active_term.Exited == 0);
+        var is_active_child = try std.process.spawn(io, .{
+            .argv = &is_active_args,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        const is_active_term = try is_active_child.wait(io);
+        const is_running = is_active_term.success();
 
         // Check if service is enabled
         // systemctl is-enabled returns 0 if enabled
         const is_enabled_args = [_][]const u8{ "systemctl", "is-enabled", self.name };
 
-        var is_enabled_child = std.process.Child.init(&is_enabled_args, allocator);
-        is_enabled_child.stdout_behavior = .Ignore;
-        is_enabled_child.stderr_behavior = .Ignore;
-
-        try is_enabled_child.spawn();
-        const is_enabled_term = try is_enabled_child.wait();
-        const is_enabled = (is_enabled_term == .Exited and is_enabled_term.Exited == 0);
+        var is_enabled_child = try std.process.spawn(io, .{
+            .argv = &is_enabled_args,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        const is_enabled_term = try is_enabled_child.wait(io);
+        const is_enabled = is_enabled_term.success();
 
         // Check if desired state matches
         const state_matches = (is_running and self.state == .running) or
@@ -60,12 +56,12 @@ pub const ServiceResource = struct {
 
     pub fn apply(self: *ServiceResource, sys: *const system.SystemInfo, dry_run: bool) !resource.ResourceResult {
         return switch (sys.init_system orelse return error.NoInitSystem) {
-            .systemd => try self.applySystemd(dry_run),
+            .systemd => try self.applySystemd(sys.io, dry_run),
             else => error.UnsupportedInitSystem,
         };
     }
 
-    fn applySystemd(self: *ServiceResource, dry_run: bool) !resource.ResourceResult {
+    fn applySystemd(self: *ServiceResource, io: std.Io, dry_run: bool) !resource.ResourceResult {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
@@ -94,14 +90,14 @@ pub const ServiceResource = struct {
 
         const output_mod = @import("../output.zig");
 
-        var state_child = std.process.Child.init(&state_args, allocator);
-        state_child.stdout_behavior = .Ignore;
-        state_child.stderr_behavior = .Inherit; // Let stderr pass through directly
+        var state_child = try std.process.spawn(io, .{
+            .argv = &state_args,
+            .stdout = .ignore,
+            .stderr = .inherit, // Let stderr pass through directly
+        });
+        const state_term = try state_child.wait(io);
 
-        try state_child.spawn();
-        const state_term = try state_child.wait();
-
-        if (state_term != .Exited or state_term.Exited != 0) {
+        if (!state_term.success()) {
             output_mod.logError("Service", self.name, "systemctl state change failed");
             return error.ServiceStateChangeFailed;
         }
@@ -112,14 +108,14 @@ pub const ServiceResource = struct {
         else
             [_][]const u8{ "systemctl", "disable", self.name };
 
-        var enabled_child = std.process.Child.init(&enabled_args, allocator);
-        enabled_child.stdout_behavior = .Ignore;
-        enabled_child.stderr_behavior = .Inherit; // Let stderr pass through directly
+        var enabled_child = try std.process.spawn(io, .{
+            .argv = &enabled_args,
+            .stdout = .ignore,
+            .stderr = .inherit, // Let stderr pass through directly
+        });
+        const enabled_term = try enabled_child.wait(io);
 
-        try enabled_child.spawn();
-        const enabled_term = try enabled_child.wait();
-
-        if (enabled_term != .Exited or enabled_term.Exited != 0) {
+        if (!enabled_term.success()) {
             output_mod.logError("Service", self.name, "systemctl enable/disable failed");
             return error.ServiceEnableChangeFailed;
         }
@@ -157,6 +153,7 @@ test "ServiceResource check - init system not available" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = null, // No init system
+        .io = std.testing.io,
     };
 
     const result = svc.check(&sys_info);
@@ -172,6 +169,7 @@ test "ServiceResource check - unsupported init system" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .sysvinit, // Unsupported
+        .io = std.testing.io,
     };
 
     const result = svc.check(&sys_info);
@@ -213,6 +211,7 @@ test "ServiceResource apply - dry run start" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = try svc.apply(&sys_info, true);
@@ -231,6 +230,7 @@ test "ServiceResource apply - dry run stop" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = try svc.apply(&sys_info, true);
@@ -252,14 +252,13 @@ test "ServiceResource with custom state" {
 // Integration test - only runs if systemctl is available
 test "ServiceResource check - systemd available" {
     // Check if systemctl is available
-    const check_systemd = std.process.Child.run(.{
-        .allocator = testing.allocator,
+    const check_systemd = std.process.run(testing.allocator, testing.io, .{
         .argv = &[_][]const u8{ "which", "systemctl" },
     }) catch return error.SkipZigTest;
     defer testing.allocator.free(check_systemd.stdout);
     defer testing.allocator.free(check_systemd.stderr);
 
-    if (check_systemd.term.Exited != 0) {
+    if (!check_systemd.term.success()) {
         return error.SkipZigTest;
     }
 
@@ -275,6 +274,7 @@ test "ServiceResource check - systemd available" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     // This should succeed without error (service exists)

@@ -13,12 +13,12 @@ pub const PackageResource = struct {
 
     pub fn check(self: *PackageResource, sys: *const system.SystemInfo) !resource.ResourceState {
         return switch (sys.pkg_manager orelse return error.NoPkgManager) {
-            .apt => try self.checkApt(),
+            .apt => try self.checkApt(sys.io),
             else => error.UnsupportedPkgManager,
         };
     }
 
-    fn checkApt(self: *PackageResource) !resource.ResourceState {
+    fn checkApt(self: *PackageResource, io: std.Io) !resource.ResourceState {
         // Use dpkg-query to check if package is installed
         // dpkg-query -W -f='${Status}' <package> returns "install ok installed" if installed
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -27,18 +27,14 @@ pub const PackageResource = struct {
 
         const args = [_][]const u8{ "dpkg-query", "-W", "-f=${Status}", self.name };
 
-        var child = std.process.Child.init(&args, allocator);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
-
-        try child.spawn();
-
-        const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-        const term = try child.wait();
+        const result = try std.process.run(allocator, io, .{
+            .argv = &args,
+            .stdout_limit = .limited(1024 * 1024),
+        });
 
         // Package is installed if exit code is 0 and status contains "install ok installed"
-        const is_installed = (term == .Exited and term.Exited == 0) and
-            std.mem.indexOf(u8, stdout, "install ok installed") != null;
+        const is_installed = result.term.success() and
+            std.mem.indexOf(u8, result.stdout, "install ok installed") != null;
 
         return if (is_installed == (self.state == .installed))
             .satisfied
@@ -48,12 +44,12 @@ pub const PackageResource = struct {
 
     pub fn apply(self: *PackageResource, sys: *const system.SystemInfo, dry_run: bool) !resource.ResourceResult {
         return switch (sys.pkg_manager orelse return error.NoPkgManager) {
-            .apt => try self.applyApt(dry_run),
+            .apt => try self.applyApt(sys.io, dry_run),
             else => error.UnsupportedPkgManager,
         };
     }
 
-    fn applyApt(self: *PackageResource, dry_run: bool) !resource.ResourceResult {
+    fn applyApt(self: *PackageResource, io: std.Io, dry_run: bool) !resource.ResourceResult {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
@@ -83,16 +79,16 @@ pub const PackageResource = struct {
         }
 
         // Execute apt-get command
-        var child = std.process.Child.init(&args, allocator);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Inherit; // Let stderr pass through directly
-
-        try child.spawn();
-        const term = try child.wait();
+        var child = try std.process.spawn(io, .{
+            .argv = &args,
+            .stdout = .ignore,
+            .stderr = .inherit, // Let stderr pass through directly
+        });
+        const term = try child.wait(io);
 
         const output_mod = @import("../output.zig");
 
-        if (term != .Exited or term.Exited != 0) {
+        if (!term.success()) {
             // Log simple error message
             output_mod.logError("Package", self.name, "apt-get command failed");
             return error.PackageOperationFailed;
@@ -125,6 +121,7 @@ test "PackageResource check - apt not available" {
         .os_family = .debian,
         .pkg_manager = null, // No package manager
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = pkg.check(&sys_info);
@@ -140,6 +137,7 @@ test "PackageResource check - unsupported package manager" {
         .os_family = .debian,
         .pkg_manager = .yum, // Unsupported on Debian
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = pkg.check(&sys_info);
@@ -172,6 +170,7 @@ test "PackageResource apply - dry run install" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = try pkg.apply(&sys_info, true);
@@ -189,6 +188,7 @@ test "PackageResource apply - dry run remove" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const result = try pkg.apply(&sys_info, true);
@@ -209,14 +209,13 @@ test "PackageResource with version" {
 // Integration test - only runs if dpkg-query is available
 test "PackageResource check - real package" {
     // Check if we're on a Debian-based system
-    const check_debian = std.process.Child.run(.{
-        .allocator = testing.allocator,
+    const check_debian = std.process.run(testing.allocator, testing.io, .{
         .argv = &[_][]const u8{ "which", "dpkg-query" },
     }) catch return error.SkipZigTest;
     defer testing.allocator.free(check_debian.stdout);
     defer testing.allocator.free(check_debian.stderr);
 
-    if (check_debian.term.Exited != 0) {
+    if (!check_debian.term.success()) {
         return error.SkipZigTest;
     }
 
@@ -230,6 +229,7 @@ test "PackageResource check - real package" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const state = try pkg.check(&sys_info);
@@ -239,14 +239,13 @@ test "PackageResource check - real package" {
 
 test "PackageResource check - nonexistent package" {
     // Check if we're on a Debian-based system
-    const check_debian = std.process.Child.run(.{
-        .allocator = testing.allocator,
+    const check_debian = std.process.run(testing.allocator, testing.io, .{
         .argv = &[_][]const u8{ "which", "dpkg-query" },
     }) catch return error.SkipZigTest;
     defer testing.allocator.free(check_debian.stdout);
     defer testing.allocator.free(check_debian.stderr);
 
-    if (check_debian.term.Exited != 0) {
+    if (!check_debian.term.success()) {
         return error.SkipZigTest;
     }
 
@@ -260,6 +259,7 @@ test "PackageResource check - nonexistent package" {
         .os_family = .debian,
         .pkg_manager = .apt,
         .init_system = .systemd,
+        .io = std.testing.io,
     };
 
     const state = try pkg.check(&sys_info);

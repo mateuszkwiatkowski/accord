@@ -3,7 +3,7 @@
 # Docker test runner for accord
 #
 # This script:
-# 1. Builds the Debian Docker image with Zig 0.15.2
+# 1. Builds the Debian Docker image with Zig 0.17.1
 # 2. Runs unit tests inside the container
 # 3. Tests system detection
 # 4. Applies test manifest and verifies operations

@@ -6,16 +6,15 @@ const apply = @import("apply.zig");
 
 const VERSION = "0.1.0";
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Initialize output
-    output.init();
+    output.init(init.environ_map);
 
     // Parse command-line arguments
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try init.minimal.args.iterateAllocator(allocator);
     defer args.deinit();
 
     // Skip program name
@@ -66,14 +65,15 @@ pub fn main() !void {
 
     // Detect system
     output.logDebug("Detecting system...");
-    const sys = try system.SystemInfo.detect(allocator);
+    const sys = try system.SystemInfo.detect(allocator, io);
     output.logDebug("System detection complete");
 
     // Read manifest file
-    const manifest_content = std.fs.cwd().readFileAlloc(
-        allocator,
+    const manifest_content = std.Io.Dir.cwd().readFileAlloc(
+        io,
         manifest_path.?,
-        1024 * 1024, // 1MB max
+        allocator,
+        .limited(1024 * 1024), // 1MB max
     ) catch |err| {
         std.debug.print("Error: Failed to read manifest file: {s}\n", .{@errorName(err)});
         std.process.exit(2);

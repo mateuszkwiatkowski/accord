@@ -27,8 +27,8 @@ const Color = struct {
 };
 
 /// Initialize output module (check for NO_COLOR)
-pub fn init() void {
-    if (std.process.hasEnvVarConstant("NO_COLOR")) {
+pub fn init(environ_map: *const std.process.Environ.Map) void {
+    if (environ_map.contains("NO_COLOR")) {
         color_enabled = false;
     }
 }
@@ -51,7 +51,7 @@ pub fn setColorEnabled(enabled: bool) void {
 /// Log a resource check
 /// Format: [CHECK] Resource name... status
 pub fn logCheck(resource_type: []const u8, name: []const u8, status: []const u8) void {
-    if (@intFromEnum(current_log_level) < @intFromEnum(LogLevel.verbose)) {
+    if (@backingInt(current_log_level) < @backingInt(LogLevel.verbose)) {
         return;
     }
 
@@ -73,7 +73,7 @@ pub fn logCheck(resource_type: []const u8, name: []const u8, status: []const u8)
 /// Log a resource application
 /// Format: [APPLY] Resource name... action
 pub fn logApply(resource_type: []const u8, name: []const u8, action: []const u8) void {
-    if (@intFromEnum(current_log_level) < @intFromEnum(LogLevel.normal)) {
+    if (@backingInt(current_log_level) < @backingInt(LogLevel.normal)) {
         return;
     }
 

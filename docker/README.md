@@ -14,7 +14,7 @@ The Docker testing infrastructure allows us to:
 ## Prerequisites
 
 - **Docker Desktop** installed and running
-- **Apple Silicon Mac** (arm64/aarch64) or compatible architecture
+- An **arm64 (aarch64)** or **x86_64** host; the image downloads the matching Zig build
 - **accord** source code in the parent directory
 
 ## Quick Start
@@ -43,7 +43,7 @@ docker run --rm -v $(pwd):/workspace accord-test:debian bash -c "
 ### Debian Bookworm (`Dockerfile.debian`)
 
 **Base**: `debian:bookworm-slim`  
-**Zig Version**: 0.15.2 (aarch64-linux)  
+**Zig Version**: 0.17.1 (aarch64-linux or x86_64-linux, matching the host; pinned in `mise.toml`)  
 **Platform Detection**:
 - OS Family: `debian`
 - Package Manager: `apt`
@@ -51,7 +51,7 @@ docker run --rm -v $(pwd):/workspace accord-test:debian bash -c "
 
 **Installed Packages**:
 - `git` - Version control (for future use)
-- `zig` - Zig compiler 0.15.2
+- `zig` - Zig compiler 0.17.1 (download verified by SHA-256)
 
 **Image Size**: ~150MB (after build)
 
@@ -180,11 +180,11 @@ The `scripts/test-docker.sh` script runs a complete test suite:
 
 **Error**: `WARNING: The requested image's platform (linux/arm64) does not match`
 
-**Solution**: Ensure you're using an ARM64/aarch64 system (Apple Silicon Mac) or modify the Dockerfile to download the appropriate Zig binary for your architecture.
+**Solution**: Build the image natively on the target architecture. The Dockerfile picks the Zig tarball from `uname -m` and supports:
+- `zig-aarch64-linux-0.17.1.tar.xz` (ARM64)
+- `zig-x86_64-linux-0.17.1.tar.xz` (x86-64)
 
-Available Zig binaries:
-- `zig-linux-aarch64-0.15.2.tar.xz` (ARM64)
-- `zig-linux-x86_64-0.15.2.tar.xz` (x86-64)
+To upgrade Zig, update `ZIG_VERSION` and both `ZIG_SHA256_*` build args (checksums are listed in https://ziglang.org/download/index.json) together with `mise.toml`.
 
 ### Image build fails
 
@@ -257,7 +257,6 @@ Once Docker testing is stable:
 
 ### Optimizations
 
-- Multi-architecture support (arm64 + amd64)
 - Pre-built base images with Zig installed
 - Layer caching optimization
 - Parallel test execution

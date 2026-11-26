@@ -636,7 +636,7 @@ fn parseFilesSimple(
 
             // Collect multi-line content (strip \\ prefix and leading whitespace)
             if (std.mem.startsWith(u8, trimmed, "\\\\")) {
-                const line_content = std.mem.trimLeft(u8, trimmed[2..], " \t");
+                const line_content = std.mem.trimStart(u8, trimmed[2..], " \t");
                 if (content_line_count < content_buffer.len) {
                     content_buffer[content_line_count] = line_content;
                     content_line_count += 1;

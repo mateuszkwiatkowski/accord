@@ -4,11 +4,6 @@ const system = @import("../system.zig");
 const output = @import("../output.zig");
 const utils = @import("../utils.zig");
 
-// Import C chmod for file permissions
-const c = @cImport({
-    @cInclude("sys/stat.h");
-});
-
 /// File resource - manage file creation, content, permissions, and ownership
 pub const FileResource = struct {
     base: resource.ResourceBase = .{},
@@ -25,7 +20,7 @@ pub const FileResource = struct {
 
     /// Check if file is in desired state
     pub fn check(self: *FileResource, sys: *const system.SystemInfo) !resource.ResourceState {
-        _ = sys;
+        const io = sys.io;
 
         // Validate: content and source are mutually exclusive
         if (self.content != null and self.source != null) {
@@ -34,7 +29,7 @@ pub const FileResource = struct {
         }
 
         // Try to open file
-        var file = std.fs.openFileAbsolute(self.path, .{}) catch |err| {
+        var file = std.Io.Dir.openFileAbsolute(io, self.path, .{}) catch |err| {
             return switch (err) {
                 error.FileNotFound => if (self.state == .absent)
                     .satisfied
@@ -46,7 +41,7 @@ pub const FileResource = struct {
                 },
             };
         };
-        defer file.close();
+        defer file.close(io);
 
         // File exists
         if (self.state == .absent) {
@@ -55,7 +50,7 @@ pub const FileResource = struct {
 
         // Check content if specified (using hash for efficiency)
         if (self.content) |desired_content| {
-            const actual_hash = try hashFileContents(file);
+            const actual_hash = try hashFileContents(io, file);
             const desired_hash = hashBytes(desired_content);
 
             if (!std.mem.eql(u8, &actual_hash, &desired_hash)) {
@@ -66,8 +61,8 @@ pub const FileResource = struct {
 
         // Check mode if specified
         if (self.mode) |desired_mode| {
-            const stat = try file.stat();
-            const actual_mode = stat.mode & 0o777;
+            const stat = try file.stat(io);
+            const actual_mode = stat.permissions.toMode() & 0o777;
             if (actual_mode != desired_mode) {
                 output.logDebug("File mode mismatch");
                 return .needs_change;
@@ -111,7 +106,7 @@ pub const FileResource = struct {
 
     /// Apply changes to bring file to desired state
     pub fn apply(self: *FileResource, sys: *const system.SystemInfo, dry_run: bool) !resource.ResourceResult {
-        _ = sys;
+        const io = sys.io;
 
         // Validate: content and source are mutually exclusive
         if (self.content != null and self.source != null) {
@@ -130,7 +125,7 @@ pub const FileResource = struct {
 
         switch (self.state) {
             .absent => {
-                std.fs.deleteFileAbsolute(self.path) catch |err| {
+                std.Io.Dir.deleteFileAbsolute(io, self.path) catch |err| {
                     const err_msg = std.fmt.allocPrint(
                         std.heap.page_allocator,
                         "Failed to remove file: {s}",
@@ -149,22 +144,15 @@ pub const FileResource = struct {
             .present => {
                 // Write content atomically (temp file + rename)
                 if (self.content) |content| {
-                    try writeFileAtomic(self.path, content);
+                    try writeFileAtomic(io, self.path, content);
                 } else if (self.source) |src| {
-                    try copyFileAtomic(src, self.path);
+                    try copyFileAtomic(io, src, self.path);
                 }
                 // If neither content nor source, file must already exist (just set perms/ownership)
 
                 // Set mode if specified
                 if (self.mode) |mode| {
-                    const allocator = std.heap.page_allocator;
-                    const path_z = try allocator.dupeZ(u8, self.path);
-                    defer allocator.free(path_z);
-
-                    const result = c.chmod(path_z.ptr, @intCast(mode));
-                    if (result != 0) {
-                        return error.ChmodFailed;
-                    }
+                    try utils.chmod(io, self.path, mode);
                 }
 
                 // Set owner/group if specified
@@ -213,16 +201,17 @@ pub const FileResource = struct {
 };
 
 /// Hash file contents using SHA256
-fn hashFileContents(file: std.fs.File) ![32]u8 {
+fn hashFileContents(io: std.Io, file: std.Io.File) ![32]u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
 
     var buf: [4096]u8 = undefined;
-    try file.seekTo(0);
+    var offset: u64 = 0;
 
     while (true) {
-        const bytes_read = try file.read(&buf);
+        const bytes_read = try file.readPositional(io, &.{&buf}, offset);
         if (bytes_read == 0) break;
         hasher.update(buf[0..bytes_read]);
+        offset += bytes_read;
     }
 
     return hasher.finalResult();
@@ -236,43 +225,43 @@ fn hashBytes(data: []const u8) [32]u8 {
 }
 
 /// Write file atomically: write to temp, then rename
-fn writeFileAtomic(path: []const u8, content: []const u8) !void {
+fn writeFileAtomic(io: std.Io, path: []const u8, content: []const u8) !void {
     const allocator = std.heap.page_allocator;
 
     // Create temp file path
     const temp_path = try std.fmt.allocPrint(
         allocator,
         "{s}.accord-tmp-{d}",
-        .{ path, std.time.milliTimestamp() },
+        .{ path, std.Io.Timestamp.now(io, .real).toMilliseconds() },
     );
     defer allocator.free(temp_path);
 
     // Write to temp file
-    const temp_file = try std.fs.createFileAbsolute(temp_path, .{});
-    defer temp_file.close();
-    try temp_file.writeAll(content);
+    const temp_file = try std.Io.Dir.createFileAbsolute(io, temp_path, .{});
+    defer temp_file.close(io);
+    try temp_file.writeStreamingAll(io, content);
 
     // Rename to final path (atomic on POSIX)
-    try std.fs.renameAbsolute(temp_path, path);
+    try std.Io.Dir.renameAbsolute(temp_path, path, io);
 }
 
 /// Copy file atomically: copy to temp, then rename
-fn copyFileAtomic(source: []const u8, dest: []const u8) !void {
+fn copyFileAtomic(io: std.Io, source: []const u8, dest: []const u8) !void {
     const allocator = std.heap.page_allocator;
 
     // Create temp file path
     const temp_path = try std.fmt.allocPrint(
         allocator,
         "{s}.accord-tmp-{d}",
-        .{ dest, std.time.milliTimestamp() },
+        .{ dest, std.Io.Timestamp.now(io, .real).toMilliseconds() },
     );
     defer allocator.free(temp_path);
 
     // Copy to temp
-    try std.fs.copyFileAbsolute(source, temp_path, .{});
+    try std.Io.Dir.copyFileAbsolute(source, temp_path, io, .{});
 
     // Rename to final path (atomic on POSIX)
-    try std.fs.renameAbsolute(temp_path, dest);
+    try std.Io.Dir.renameAbsolute(temp_path, dest, io);
 }
 
 // Tests
@@ -294,7 +283,7 @@ test "FileResource check - file missing" {
     const test_path = "/tmp/accord-test-file-missing";
 
     // Ensure it doesn't exist
-    std.fs.deleteFileAbsolute(test_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -305,6 +294,7 @@ test "FileResource check - file missing" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const state = try file.check(&sys);
@@ -316,10 +306,10 @@ test "FileResource check - file exists and matches" {
     const test_content = "test content\n";
 
     // Create file
-    const f = try std.fs.createFileAbsolute(test_path, .{});
-    try f.writeAll(test_content);
-    f.close();
-    defer std.fs.deleteFileAbsolute(test_path) catch {};
+    const f = try std.Io.Dir.createFileAbsolute(std.testing.io, test_path, .{});
+    try f.writeStreamingAll(std.testing.io, test_content);
+    f.close(std.testing.io);
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -330,6 +320,7 @@ test "FileResource check - file exists and matches" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const state = try file.check(&sys);
@@ -340,10 +331,10 @@ test "FileResource check - content differs" {
     const test_path = "/tmp/accord-test-file-differs";
 
     // Create file with different content
-    const f = try std.fs.createFileAbsolute(test_path, .{});
-    try f.writeAll("old content");
-    f.close();
-    defer std.fs.deleteFileAbsolute(test_path) catch {};
+    const f = try std.Io.Dir.createFileAbsolute(std.testing.io, test_path, .{});
+    try f.writeStreamingAll(std.testing.io, "old content");
+    f.close(std.testing.io);
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -354,6 +345,7 @@ test "FileResource check - content differs" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const state = try file.check(&sys);
@@ -365,7 +357,7 @@ test "FileResource apply - creates file with content" {
     const test_content = "hello accord!";
 
     // Ensure it doesn't exist
-    std.fs.deleteFileAbsolute(test_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -376,18 +368,19 @@ test "FileResource apply - creates file with content" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try file.apply(&sys, false);
     try std.testing.expect(result.changed == true);
 
     // Verify file exists and has correct content
-    const f = try std.fs.openFileAbsolute(test_path, .{});
-    defer f.close();
-    defer std.fs.deleteFileAbsolute(test_path) catch {};
+    const f = try std.Io.Dir.openFileAbsolute(std.testing.io, test_path, .{});
+    defer f.close(std.testing.io);
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var buf: [100]u8 = undefined;
-    const bytes_read = try f.readAll(&buf);
+    const bytes_read = try f.readPositionalAll(std.testing.io, &buf, 0);
     try std.testing.expect(std.mem.eql(u8, buf[0..bytes_read], test_content));
 }
 
@@ -395,8 +388,8 @@ test "FileResource apply - removes file" {
     const test_path = "/tmp/accord-test-file-remove";
 
     // Create file first
-    const f = try std.fs.createFileAbsolute(test_path, .{});
-    f.close();
+    const f = try std.Io.Dir.createFileAbsolute(std.testing.io, test_path, .{});
+    f.close(std.testing.io);
 
     var file = FileResource{
         .path = test_path,
@@ -407,13 +400,14 @@ test "FileResource apply - removes file" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try file.apply(&sys, false);
     try std.testing.expect(result.changed == true);
 
     // Verify file doesn't exist
-    const open_result = std.fs.openFileAbsolute(test_path, .{});
+    const open_result = std.Io.Dir.openFileAbsolute(std.testing.io, test_path, .{});
     try std.testing.expectError(error.FileNotFound, open_result);
 }
 
@@ -422,7 +416,7 @@ test "FileResource idempotency" {
     const test_content = "idempotent test";
 
     // Cleanup first
-    std.fs.deleteFileAbsolute(test_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -433,6 +427,7 @@ test "FileResource idempotency" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // First apply - should create
@@ -444,7 +439,7 @@ test "FileResource idempotency" {
     try std.testing.expect(check_result == .satisfied);
 
     // Cleanup
-    try std.fs.deleteFileAbsolute(test_path);
+    try std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path);
 }
 
 test "FileResource dry run doesn't modify" {
@@ -459,6 +454,7 @@ test "FileResource dry run doesn't modify" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // Apply with dry_run = true
@@ -466,7 +462,7 @@ test "FileResource dry run doesn't modify" {
     try std.testing.expect(result.changed == true);
 
     // File should not exist
-    const open_result = std.fs.openFileAbsolute(test_path, .{});
+    const open_result = std.Io.Dir.openFileAbsolute(std.testing.io, test_path, .{});
     try std.testing.expectError(error.FileNotFound, open_result);
 }
 
@@ -483,6 +479,7 @@ test "FileResource content and source mutually exclusive" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     // Should error on check
@@ -498,7 +495,7 @@ test "FileResource apply - sets mode" {
     const test_path = "/tmp/accord-test-file-mode";
     const test_content = "mode test";
 
-    std.fs.deleteFileAbsolute(test_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -510,16 +507,17 @@ test "FileResource apply - sets mode" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     _ = try file.apply(&sys, false);
-    defer std.fs.deleteFileAbsolute(test_path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     // Verify mode
-    const f = try std.fs.openFileAbsolute(test_path, .{});
-    defer f.close();
-    const stat = try f.stat();
-    const actual_mode = stat.mode & 0o777;
+    const f = try std.Io.Dir.openFileAbsolute(std.testing.io, test_path, .{});
+    defer f.close(std.testing.io);
+    const stat = try f.stat(std.testing.io);
+    const actual_mode = stat.permissions.toMode() & 0o777;
     try std.testing.expectEqual(@as(u32, 0o600), actual_mode);
 }
 
@@ -527,11 +525,11 @@ test "FileResource apply - sets owner and group" {
     const test_path = "/tmp/accord-test-file-owner";
     const test_content = "ownership test";
 
-    std.fs.deleteFileAbsolute(test_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     // Create file first to get current ownership
-    const f = try std.fs.createFileAbsolute(test_path, .{});
-    f.close();
+    const f = try std.Io.Dir.createFileAbsolute(std.testing.io, test_path, .{});
+    f.close(std.testing.io);
 
     const original = try utils.getFileOwnership(test_path);
     const uid_str = try std.fmt.allocPrint(std.testing.allocator, "{d}", .{original.uid});
@@ -540,7 +538,7 @@ test "FileResource apply - sets owner and group" {
     defer std.testing.allocator.free(gid_str);
 
     // Delete and recreate with accord
-    std.fs.deleteFileAbsolute(test_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -553,10 +551,11 @@ test "FileResource apply - sets owner and group" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     _ = try file.apply(&sys, false);
-    defer std.fs.deleteFileAbsolute(test_path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     // Verify ownership (same as original)
     const ownership = try utils.getFileOwnership(test_path);
@@ -568,9 +567,9 @@ test "FileResource check - mode differs" {
     const test_path = "/tmp/accord-test-file-mode-diff";
 
     // Create file with mode 0o644
-    const f = try std.fs.createFileAbsolute(test_path, .{ .mode = 0o644 });
-    f.close();
-    defer std.fs.deleteFileAbsolute(test_path) catch {};
+    const f = try std.Io.Dir.createFileAbsolute(std.testing.io, test_path, .{ .permissions = .fromMode(0o644) });
+    f.close(std.testing.io);
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, test_path) catch {};
 
     var file = FileResource{
         .path = test_path,
@@ -581,6 +580,7 @@ test "FileResource check - mode differs" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const state = try file.check(&sys);
@@ -593,13 +593,13 @@ test "FileResource apply - copy from source" {
     const test_content = "source file content";
 
     // Create source file
-    const src_file = try std.fs.createFileAbsolute(source_path, .{});
-    try src_file.writeAll(test_content);
-    src_file.close();
-    defer std.fs.deleteFileAbsolute(source_path) catch {};
+    const src_file = try std.Io.Dir.createFileAbsolute(std.testing.io, source_path, .{});
+    try src_file.writeStreamingAll(std.testing.io, test_content);
+    src_file.close(std.testing.io);
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, source_path) catch {};
 
     // Delete dest if exists
-    std.fs.deleteFileAbsolute(dest_path) catch {};
+    std.Io.Dir.deleteFileAbsolute(std.testing.io, dest_path) catch {};
 
     var file = FileResource{
         .path = dest_path,
@@ -610,17 +610,18 @@ test "FileResource apply - copy from source" {
         .os_family = .unknown,
         .pkg_manager = null,
         .init_system = null,
+        .io = std.testing.io,
     };
 
     const result = try file.apply(&sys, false);
     try std.testing.expect(result.changed == true);
-    defer std.fs.deleteFileAbsolute(dest_path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(std.testing.io, dest_path) catch {};
 
     // Verify content was copied
-    const dest_file = try std.fs.openFileAbsolute(dest_path, .{});
-    defer dest_file.close();
+    const dest_file = try std.Io.Dir.openFileAbsolute(std.testing.io, dest_path, .{});
+    defer dest_file.close(std.testing.io);
 
     var buf: [100]u8 = undefined;
-    const bytes_read = try dest_file.readAll(&buf);
+    const bytes_read = try dest_file.readPositionalAll(std.testing.io, &buf, 0);
     try std.testing.expect(std.mem.eql(u8, buf[0..bytes_read], test_content));
 }
