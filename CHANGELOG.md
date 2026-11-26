@@ -3,7 +3,7 @@
 All notable changes to accord. Versions follow [Semantic Versioning](https://semver.org);
 the release workflow publishes the section of the tagged version as its release notes.
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-11-26
 
 First release.
 
