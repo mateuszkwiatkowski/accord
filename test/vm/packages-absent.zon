@@ -1,0 +1,6 @@
+// VM test: remove the package installed by packages.zon
+.{
+    .packages = .{
+        .tree = .{ .state = .absent },
+    },
+}

@@ -1,6 +1,8 @@
 # Docker Testing Infrastructure for accord
 
-This directory contains Docker configurations for testing accord on various Linux distributions.
+This directory contains a Debian container used as a quick smoke test (`scripts/test-docker.sh`).
+
+For testing across operating systems, use the VM matrix instead: `scripts/vm-test.sh` boots real Ubuntu, Debian, Rocky, Alpine and FreeBSD VMs. See [test/vm/README.md](../test/vm/README.md).
 
 ## Overview
 
@@ -231,21 +233,7 @@ Full test suite: ~30-60 seconds
 
 ## Future Work
 
-### Additional Images (Planned)
-
-1. **Ubuntu** (`Dockerfile.ubuntu`)
-   - Ubuntu 22.04 LTS
-   - Same as Debian (apt, systemd)
-
-2. **Fedora** (`Dockerfile.fedora`)
-   - Fedora latest
-   - Test dnf package manager
-   - Test on RedHat family
-
-3. **Alpine** (`Dockerfile.alpine`)
-   - Alpine Linux
-   - Test apk package manager
-   - Test openrc init system
+Other distributions are covered by the VM matrix ([test/vm/README.md](../test/vm/README.md)) rather than more Dockerfiles.
 
 ### CI/CD Integration
 

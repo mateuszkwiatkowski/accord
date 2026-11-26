@@ -57,11 +57,12 @@ accord/
 │   │   ├── user_test.zig
 │   │   └── group_test.zig
 │   ├── integration_test.zig  # End-to-end tests
-│   └── fixtures/             # Sample manifests for testing
-│       ├── webserver.zon
-│       ├── devenv.zon
-│       ├── database.zon
-│       └── invalid.zon
+│   ├── fixtures/             # Sample manifests for testing
+│   │   ├── webserver.zon
+│   │   ├── devenv.zon
+│   │   ├── database.zon
+│   │   └── invalid.zon
+│   └── vm/                   # VM test matrix: per-OS .conf, manifests, guest.sh
 ├── examples/                 # User-facing example manifests
 │   ├── webserver.zon
 │   ├── devenv.zon
@@ -72,6 +73,9 @@ accord/
 ├── AGENTS.md                 # This file
 ├── README.md                 # User-facing documentation
 ├── LICENSE                   # MIT license
+├── scripts/
+│   ├── vm-test.sh            # VM test matrix runner (see test/vm/README.md)
+│   └── test-docker.sh        # Debian container smoke test
 └── doc/
     ├── accord.1              # Main command man page
     ├── accord-manifest.5     # Manifest format specification
@@ -1051,15 +1055,9 @@ test "apply manifest - all resources" {
 
 ### System Tests
 
-Test on real systems (Docker containers recommended).
+Run `scripts/vm-test.sh` before calling a change done if it touches resources, detection, `utils.zig` or anything OS-specific. It boots arm64 VMs of Ubuntu 26.04, Debian 13, Rocky 10, Alpine 3.24 (musl) and FreeBSD 15.1 on the Mac, runs the unit tests and per-resource checks in each as root, and prints an OS × check table. Some cells `FAIL` today because accord lacks support there: compare against the "Current results" table in `test/vm/README.md`, and treat any *other* change as a regression. That README covers adding an OS, debugging with `--keep` / `ssh`, and the per-OS gotchas.
 
-```bash
-# Test on Debian container
-docker run -v $(pwd):/accord debian:bookworm bash -c "cd /accord && zig build && ./zig-out/bin/accord apply examples/webserver.zon"
-
-# Test on Ubuntu container
-docker run -v $(pwd):/accord ubuntu:22.04 bash -c "cd /accord && zig build && ./zig-out/bin/accord apply examples/webserver.zon"
-```
+`scripts/test-docker.sh` is a quicker Debian-only smoke test in a container (needs a container VM with more than 2 GB RAM, see Toolchain).
 
 **Idempotency Test**:
 ```bash
@@ -1080,6 +1078,8 @@ Zig **0.17.1**, pinned in `mise.toml` (`mise install`), `build.zig.zon` (`minimu
 - **Tests** build `SystemInfo` literals with `.io = std.testing.io` and use `std.testing.io` for fixture file operations.
 - **libc via `std.c`**: `@cImport` no longer exists. `utils.zig` calls `std.c.getpwnam`/`getgrnam`/`stat`/`fchownat` directly (`link_libc = true` in `build.zig`). `chown` stays on libc because `std.Io.Dir.setFileOwner` panics with "TODO" in 0.17.1; `std.Io.File.Stat` exposes no uid/gid.
 - **Mode bits**: `stat.permissions.toMode()`, `File.Permissions.fromMode(mode)`.
+- **Cross-compiling**: `zig build install test-bin -Dtarget=aarch64-linux-gnu|aarch64-linux-musl|aarch64-freebsd` builds `accord` and the unit test binary (`bin/accord-test`) for another OS; `scripts/vm-test.sh` relies on it. Anything using `std.c` types must compile for all three: `std.c.Stat` is `void` on Linux, so `utils.getFileOwnership` uses `statx` there.
+- **Detection line**: `--log-level=debug` prints `os_family=… pkg_manager=… init_system=…` from `SystemInfo.detect`; the VM `detect` check asserts on its exact format.
 
 Testing environments:
 
@@ -1256,9 +1256,7 @@ zig build -Doptimize=ReleaseSafe       # Build
 
 ### 4. Integration Test
 ```bash
-# Test on real system or container
-sudo accord apply examples/test.zon
-sudo accord apply examples/test.zon  # Idempotency check
+scripts/vm-test.sh                     # Every OS in test/vm/, as root, in throwaway VMs
 ```
 
 ### 5. Commit

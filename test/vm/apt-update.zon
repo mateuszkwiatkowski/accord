@@ -1,0 +1,5 @@
+// VM test: refresh the apt cache before packages.zon (apt systems only;
+// fresh cloud images ship without package lists)
+.{
+    .apt_update = .{},
+}

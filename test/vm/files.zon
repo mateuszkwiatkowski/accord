@@ -1,0 +1,27 @@
+// VM test: directories and files (every OS)
+//
+// Owner/group "daemon" exist by name on all OSs in the matrix, so this
+// exercises name lookup (getpwnam/getgrnam) under glibc, musl and FreeBSD libc.
+// Directories are applied before files, so the files can live inside one.
+.{
+    .directories = .{
+        .@"/var/tmp/accord-vm-files" = .{
+            .mode = 0o750,
+            .owner = "daemon",
+            .group = "daemon",
+        },
+    },
+
+    .files = .{
+        .@"/var/tmp/accord-vm-files/content.txt" = .{
+            .content = "hello from accord",
+            .mode = 0o640,
+            .owner = "daemon",
+            .group = "daemon",
+        },
+        .@"/var/tmp/accord-vm-files/copied.txt" = .{
+            .source = "/var/tmp/accord-vm/source.txt",
+            .mode = 0o600,
+        },
+    },
+}

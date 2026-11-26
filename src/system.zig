@@ -65,17 +65,17 @@ pub const SystemInfo = struct {
 
         // Detect package manager
         info.pkg_manager = detectPkgManager(io);
-        if (info.pkg_manager) |pm| {
-            const pm_name = @tagName(pm);
-            output.logDebug(pm_name);
-        }
 
         // Detect init system
         info.init_system = detectInitSystem(io);
-        if (info.init_system) |init| {
-            const init_name = @tagName(init);
-            output.logDebug(init_name);
-        }
+
+        // One stable line; scripts/vm-test.sh asserts on it
+        var buf: [128]u8 = undefined;
+        output.logDebug(std.fmt.bufPrint(&buf, "os_family={t} pkg_manager={s} init_system={s}", .{
+            info.os_family,
+            if (info.pkg_manager) |pm| @tagName(pm) else "none",
+            if (info.init_system) |init| @tagName(init) else "none",
+        }) catch "system detected");
 
         return info;
     }

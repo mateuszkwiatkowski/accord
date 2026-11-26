@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 // libc bindings for POSIX user/group lookup and stat (requires link_libc)
 const c = std.c;
@@ -59,12 +60,23 @@ pub fn chmod(io: std.Io, path: []const u8, mode: u32) !void {
     };
 }
 
-/// Get current file/directory ownership using libc stat
+/// Get current file/directory ownership
 /// (std.Io.File.Stat does not expose uid/gid)
 pub fn getFileOwnership(path: []const u8) !struct { uid: u32, gid: u32 } {
     const allocator = std.heap.page_allocator;
     const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
+
+    // std.c.Stat is void on Linux (std uses statx there), so do the same
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var stx: linux.Statx = undefined;
+        const rc = linux.statx(c.AT.FDCWD, path_z.ptr, 0, .{ .UID = true, .GID = true }, &stx);
+        if (linux.errno(rc) != .SUCCESS) {
+            return error.StatFailed;
+        }
+        return .{ .uid = stx.uid, .gid = stx.gid };
+    }
 
     var stat_buf: c.Stat = undefined;
     const result = c.stat(path_z.ptr, &stat_buf);

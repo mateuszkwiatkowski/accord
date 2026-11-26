@@ -1,0 +1,6 @@
+// VM test: install a small package that has the same name on every OS
+.{
+    .packages = .{
+        .tree = .{},
+    },
+}

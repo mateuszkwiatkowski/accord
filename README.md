@@ -644,10 +644,13 @@ Container host configuration:
 
 ### Currently Supported
 
-- **Debian** (Bookworm, Bullseye)
-- **Ubuntu** (22.04, 20.04)
-- Package manager: **apt**
-- Init system: **systemd**
+- **Debian** and **Ubuntu**: everything (apt, systemd)
+- **Rocky Linux / RHEL family**: files, directories, services (systemd); packages (dnf) not yet
+- **Alpine Linux** (musl) and **FreeBSD**: files and directories; packages and services not yet
+
+These are tested on real VMs of Ubuntu 26.04, Debian 13, Rocky Linux 10,
+Alpine 3.24 and FreeBSD 15.1 (arm64). See [test/vm/README.md](test/vm/README.md)
+for the current results.
 
 ### Roadmap
 
@@ -726,6 +729,9 @@ zig build
 
 # Run tests
 zig build test
+
+# Test on real VMs of every supported OS (Apple silicon Mac + QEMU)
+scripts/vm-test.sh
 
 # Install locally
 sudo zig build install
