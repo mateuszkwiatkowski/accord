@@ -11,7 +11,7 @@
 
 .{
     // Update package cache first
-    .apt_update = .{},
+    .package_cache = .{},
 
     // Install nginx package
     .packages = .{

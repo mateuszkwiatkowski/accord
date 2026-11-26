@@ -1,0 +1,5 @@
+// VM test: refresh the package index before packages.zon (fresh cloud
+// images may ship without one)
+.{
+    .package_cache = .{},
+}

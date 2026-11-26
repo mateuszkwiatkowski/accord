@@ -92,16 +92,27 @@ check_files() {
 	rm -rf "$dir"
 }
 
-check_packages() {
-	if command -v apt-get > /dev/null; then
-		step "refresh apt cache"
-		accord apply apt-update.zon
+# Ask the package database directly, independently of accord's own check.
+# Not `command -v`: Alpine's busybox has a tree applet of its own.
+pkg_installed() {
+	if command -v dpkg-query > /dev/null; then
+		dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q "install ok installed"
+	elif command -v rpm > /dev/null; then
+		rpm -q "$1" > /dev/null 2>&1
+	elif command -v apk > /dev/null; then
+		apk info -e "$1" > /dev/null 2>&1
+	else
+		pkg info -e "$1" > /dev/null 2>&1
 	fi
+}
+
+check_packages() {
+	step "refresh package cache"
+	accord apply package-cache.zon
 
 	step "install tree"
 	accord apply packages.zon
-	# A fresh shell each time: this one may have hashed tree's path.
-	sh -c "command -v tree" > /dev/null || fail "tree is not installed"
+	pkg_installed tree || fail "tree is not installed"
 
 	step "install again (idempotency)"
 	accord apply packages.zon
@@ -109,7 +120,7 @@ check_packages() {
 
 	step "remove tree"
 	accord apply packages-absent.zon
-	! sh -c "command -v tree" > /dev/null || fail "tree is still installed"
+	! pkg_installed tree || fail "tree is still installed"
 
 	step "remove again (idempotency)"
 	accord apply packages-absent.zon
@@ -137,25 +148,27 @@ service_manifest() {
 		"$SERVICE" "$1" "$2" > "service-$1.zon"
 }
 
+# Apply a service manifest, check the init system agrees, and check a second
+# run is a no-op.
+service_to() {
+	step "$SERVICE -> $1 $2"
+	accord apply "service-$1.zon"
+	[ "$(service_state "$SERVICE")" = "$1 $2" ] ||
+		fail "$SERVICE is '$(service_state "$SERVICE")'"
+	accord apply "service-$1.zon"
+	assert_idempotent "service-$1.zon"
+}
+
+# Start, stop, start: every transition runs at least once, whatever state
+# the image ships the service in, and it ends up running.
 check_services() {
-	original="$(service_state "$SERVICE")"
-	echo "$SERVICE before: $original"
+	echo "$SERVICE before: $(service_state "$SERVICE")"
 	service_manifest stopped false
 	service_manifest running true
 
-	step "stop and disable $SERVICE"
-	accord apply service-stopped.zon
-	[ "$(service_state "$SERVICE")" = "stopped disabled" ] ||
-		fail "$SERVICE is '$(service_state "$SERVICE")'"
-	accord apply service-stopped.zon
-	assert_idempotent service-stopped.zon
-
-	step "start and enable $SERVICE"
-	accord apply service-running.zon
-	[ "$(service_state "$SERVICE")" = "running enabled" ] ||
-		fail "$SERVICE is '$(service_state "$SERVICE")'"
-	accord apply service-running.zon
-	assert_idempotent service-running.zon
+	service_to running enabled
+	service_to stopped disabled
+	service_to running enabled
 }
 
 case "${1:-}" in

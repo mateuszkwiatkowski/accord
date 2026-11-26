@@ -3,12 +3,12 @@ const DirectoryResource = @import("resources/directory.zig").DirectoryResource;
 const FileResource = @import("resources/file.zig").FileResource;
 const PackageResource = @import("resources/package.zig").PackageResource;
 const ServiceResource = @import("resources/service.zig").ServiceResource;
-const AptUpdateResource = @import("resources/apt_update.zig").AptUpdateResource;
+const PackageCacheResource = @import("resources/package_cache.zig").PackageCacheResource;
 const output = @import("output.zig");
 
 /// Manifest structure containing all resources
 pub const Manifest = struct {
-    apt_update: ?AptUpdateResource = null, // Singular, nameless pattern
+    package_cache: ?PackageCacheResource = null, // Singular, nameless pattern
     directories: ?std.StringHashMap(DirectoryResource) = null,
     files: ?std.StringHashMap(FileResource) = null,
     packages: ?std.StringHashMap(PackageResource) = null,
@@ -59,10 +59,12 @@ pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Manifest {
 
     var manifest = Manifest.init(allocator);
 
-    // Look for .apt_update (nameless pattern - single resource)
-    if (std.mem.indexOf(u8, content, ".apt_update")) |_| {
-        // For nameless pattern: just create a default resource
-        manifest.apt_update = AptUpdateResource{};
+    // Look for .package_cache, or its older apt-only name .apt_update
+    // (nameless pattern - single resource)
+    if (std.mem.indexOf(u8, content, ".package_cache") != null or
+        std.mem.indexOf(u8, content, ".apt_update") != null)
+    {
+        manifest.package_cache = PackageCacheResource{};
     }
 
     // Look for .directories section
@@ -1380,7 +1382,20 @@ test "parse service with hyphenated name" {
     }
 }
 
-test "parse manifest with apt_update" {
+test "parse manifest with package_cache" {
+    const content =
+        \\.{
+        \\    .package_cache = .{},
+        \\}
+    ;
+
+    var manifest = try parse(std.testing.allocator, content);
+    defer manifest.deinit();
+
+    try std.testing.expect(manifest.package_cache != null);
+}
+
+test "parse manifest with apt_update alias" {
     const content =
         \\.{
         \\    .apt_update = .{},
@@ -1390,9 +1405,9 @@ test "parse manifest with apt_update" {
     var manifest = try parse(std.testing.allocator, content);
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.apt_update != null);
+    try std.testing.expect(manifest.package_cache != null);
 
-    if (manifest.apt_update) |apt| {
+    if (manifest.package_cache) |apt| {
         try std.testing.expect(std.mem.eql(u8, apt.name, "update"));
     }
 }
@@ -1410,10 +1425,10 @@ test "parse manifest with apt_update and packages" {
     var manifest = try parse(std.testing.allocator, content);
     defer manifest.deinit();
 
-    try std.testing.expect(manifest.apt_update != null);
+    try std.testing.expect(manifest.package_cache != null);
     try std.testing.expect(manifest.packages != null);
 
-    if (manifest.apt_update) |apt| {
+    if (manifest.package_cache) |apt| {
         try std.testing.expect(std.mem.eql(u8, apt.name, "update"));
     }
 }

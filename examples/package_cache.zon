@@ -1,0 +1,11 @@
+// Example manifest: refresh the package index
+//
+// Runs `apt-get update`, `dnf makecache`, `apk update` or `pkg update`,
+// whichever the system uses. It always runs before every other resource,
+// so packages are installed from a fresh index.
+//
+// Usage: sudo accord apply package_cache.zon
+
+.{
+    .package_cache = .{},
+}

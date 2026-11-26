@@ -25,14 +25,14 @@ pub fn applyManifest(
         .failed = 0,
     };
 
-    // Apply apt_update FIRST (must run before packages)
-    if (manifest.apt_update) |*apt_upd| blk: {
+    // Refresh the package cache FIRST (must run before packages)
+    if (manifest.package_cache) |*cache| blk: {
         result.total += 1;
 
         // Check current state
-        const state = apt_upd.check(sys) catch |err| {
-            if (apt_upd.base.allow_failure) {
-                output.logError("AptUpdate", apt_upd.name, @errorName(err));
+        const state = cache.check(sys) catch |err| {
+            if (cache.base.allow_failure) {
+                output.logError("PackageCache", cache.name, @errorName(err));
                 result.failed += 1;
                 break :blk;
             } else {
@@ -46,17 +46,17 @@ pub fn applyManifest(
             .needs_change => "needs changes",
             .failed => "check failed",
         };
-        output.logCheck("AptUpdate", apt_upd.name, status_msg);
+        output.logCheck("PackageCache", cache.name, status_msg);
 
         // If already satisfied, skip
         if (state == .satisfied) {
             result.satisfied += 1;
         } else {
             // Apply changes (resource logs its own output)
-            output.logDebug(if (dry_run) "Calling apt_upd.apply with dry_run=true" else "Calling apt_upd.apply with dry_run=false");
-            const apply_result = apt_upd.apply(sys, dry_run) catch |err| {
-                if (apt_upd.base.allow_failure) {
-                    output.logError("AptUpdate", apt_upd.name, @errorName(err));
+            output.logDebug(if (dry_run) "Calling cache.apply with dry_run=true" else "Calling cache.apply with dry_run=false");
+            const apply_result = cache.apply(sys, dry_run) catch |err| {
+                if (cache.base.allow_failure) {
+                    output.logError("PackageCache", cache.name, @errorName(err));
                     result.failed += 1;
                     break :blk;
                 } else {

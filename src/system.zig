@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const output = @import("output.zig");
 
 /// Operating system family
@@ -55,13 +56,7 @@ pub const SystemInfo = struct {
             .io = io,
         };
 
-        // Try to detect Linux distribution from /etc/os-release
-        if (detectLinuxDistro(allocator, io)) |os_family| {
-            info.os_family = os_family;
-            output.logDebug("Detected Linux distribution");
-        } else |_| {
-            output.logDebug("Failed to detect Linux distribution, trying other methods");
-        }
+        info.os_family = detectOsFamily(allocator, io);
 
         // Detect package manager
         info.pkg_manager = detectPkgManager(io);
@@ -81,46 +76,63 @@ pub const SystemInfo = struct {
     }
 };
 
-/// Detect Linux distribution from /etc/os-release
-fn detectLinuxDistro(allocator: std.mem.Allocator, io: std.Io) !OsFamily {
-    const os_release_path = "/etc/os-release";
-
-    // Try to read /etc/os-release
-    const content = std.Io.Dir.cwd().readFileAlloc(io, os_release_path, allocator, .limited(8192)) catch {
-        return error.NoOsRelease;
+/// Detect the OS family. A binary is built for exactly one OS, so outside
+/// Linux the compile target answers it; Linux distributions are told apart
+/// by /etc/os-release.
+fn detectOsFamily(allocator: std.mem.Allocator, io: std.Io) OsFamily {
+    return switch (builtin.os.tag) {
+        .linux => blk: {
+            const content = std.Io.Dir.cwd().readFileAlloc(io, "/etc/os-release", allocator, .limited(8192)) catch {
+                output.logDebug("Cannot read /etc/os-release");
+                break :blk .unknown;
+            };
+            defer allocator.free(content);
+            break :blk parseOsRelease(content);
+        },
+        .freebsd => .freebsd,
+        .openbsd => .openbsd,
+        .netbsd => .netbsd,
+        .macos => .macos,
+        else => .unknown,
     };
-    defer allocator.free(content);
+}
 
-    // Parse os-release file for ID or ID_LIKE
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "ID=") or std.mem.startsWith(u8, line, "ID_LIKE=")) {
-            // Extract value (remove quotes if present)
-            const value_start: usize = std.mem.indexOf(u8, line, "=").? + 1;
-            var value = line[value_start..];
-
-            // Remove quotes
-            if (value.len > 0 and value[0] == '"') {
-                value = value[1..];
-            }
-            if (value.len > 0 and value[value.len - 1] == '"') {
-                value = value[0 .. value.len - 1];
-            }
-
-            // Check for known distributions
-            if (std.mem.indexOf(u8, value, "debian") != null or std.mem.indexOf(u8, value, "ubuntu") != null) {
-                return .debian;
-            } else if (std.mem.indexOf(u8, value, "fedora") != null or std.mem.indexOf(u8, value, "rhel") != null or std.mem.indexOf(u8, value, "centos") != null) {
-                return .redhat;
-            } else if (std.mem.indexOf(u8, value, "arch") != null) {
-                return .arch;
-            } else if (std.mem.indexOf(u8, value, "alpine") != null) {
-                return .alpine;
+/// Map os-release contents to an OS family. ID is checked before ID_LIKE,
+/// whatever their order in the file, so a distribution that names itself
+/// wins over the ones it resembles.
+pub fn parseOsRelease(content: []const u8) OsFamily {
+    for ([_][]const u8{ "ID", "ID_LIKE" }) |key| {
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len <= key.len or !std.mem.startsWith(u8, line, key) or line[key.len] != '=') continue;
+            const value = std.mem.trim(u8, line[key.len + 1 ..], "\"'");
+            // ID_LIKE is a space-separated list
+            var ids = std.mem.tokenizeScalar(u8, value, ' ');
+            while (ids.next()) |id| {
+                if (familyForId(id)) |family| return family;
             }
         }
     }
-
     return .unknown;
+}
+
+fn familyForId(id: []const u8) ?OsFamily {
+    const map = [_]struct { []const u8, OsFamily }{
+        .{ "debian", .debian },
+        .{ "ubuntu", .debian },
+        .{ "rhel", .redhat },
+        .{ "fedora", .redhat },
+        .{ "centos", .redhat },
+        .{ "rocky", .redhat },
+        .{ "almalinux", .redhat },
+        .{ "arch", .arch },
+        .{ "alpine", .alpine },
+    };
+    for (map) |entry| {
+        if (std.mem.eql(u8, id, entry[0])) return entry[1];
+    }
+    return null;
 }
 
 /// Detect package manager by checking for binaries
@@ -203,8 +215,20 @@ test "system detection doesn't crash" {
     try std.testing.expect(true);
 }
 
-test "detect Linux distro from mock os-release" {
-    // This test would require mocking file system, skip for now
-    // In real implementation, we'd pass the file path as a parameter
-    try std.testing.expect(true);
+test "parseOsRelease" {
+    const cases = [_]struct { []const u8, OsFamily }{
+        .{ "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nID=debian\n", .debian },
+        .{ "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n", .debian },
+        .{ "NAME=\"Rocky Linux\"\nID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n", .redhat },
+        .{ "NAME=\"AlmaLinux\"\nID_LIKE=\"rhel centos fedora\"\nID=\"almalinux\"\n", .redhat },
+        .{ "NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.24.4\n", .alpine },
+        .{ "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", .debian },
+        .{ "NAME=FreeBSD\nID=freebsd\n", .unknown },
+        .{ "ID=archlinux\nID_LIKE=arch\n", .arch },
+        .{ "IDENTITY=debian\n", .unknown },
+        .{ "", .unknown },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(case[1], parseOsRelease(case[0]));
+    }
 }

@@ -23,6 +23,7 @@ pub fn main(init: std.process.Init) !void {
     var manifest_path: ?[]const u8 = null;
     var dry_run = false;
     var log_level: ?output.LogLevel = null;
+    var seen_apply = false;
 
     // Simple argument parsing
     while (args.next()) |arg| {
@@ -37,17 +38,21 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.startsWith(u8, arg, "--log-level=")) {
             const level_str = arg["--log-level=".len..];
             log_level = parseLogLevel(level_str);
-        } else if (std.mem.eql(u8, arg, "apply")) {
-            // Expect manifest path next
-            if (args.next()) |path| {
-                manifest_path = path;
-            } else {
-                std.debug.print("Error: 'apply' requires a manifest path\n", .{});
-                std.process.exit(1);
-            }
-        } else {
-            // Assume it's a manifest path if no command was given
+        } else if (std.mem.eql(u8, arg, "apply") and !seen_apply and manifest_path == null) {
+            // The only command; options may come before or after it
+            seen_apply = true;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            // Never take an option for a manifest path: a misspelled
+            // --dry-run would otherwise apply for real
+            std.debug.print("Error: Unknown option '{s}'\n\n", .{arg});
+            printUsage();
+            std.process.exit(1);
+        } else if (manifest_path == null) {
             manifest_path = arg;
+        } else {
+            std.debug.print("Error: Unexpected argument '{s}'\n\n", .{arg});
+            printUsage();
+            std.process.exit(1);
         }
     }
 

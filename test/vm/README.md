@@ -47,26 +47,26 @@ EDK2 firmware. 1-3 GB per OS for cached images in `~/.cache/accord-vm`
 | `unit` | the unit test binary passes as root (apt/dpkg/systemd tests skip where absent) |
 | `detect` | the `os_family=… pkg_manager=… init_system=…` debug line equals `EXPECT_DETECT` |
 | `files` | `files.zon`: dry run creates nothing; modes and owner/group by name are right; a second run applies 0; drift is repaired |
-| `packages` | `tree` is installed, then removed, each idempotent (`apt-update.zon` first on apt systems) |
-| `services` | `SERVICE` is stopped+disabled, then started+enabled, as reported by the init system itself; each idempotent |
+| `packages` | `package-cache.zon` refreshes the index; `tree` is installed, then removed, each idempotent and confirmed by the package database |
+| `services` | `SERVICE` is started+enabled, stopped+disabled, started+enabled again, as reported by the init system itself; each idempotent |
 
 A check stops at its first failure, so a failure hides any later assertion in
 the same check.
 
 ## Current results
 
-As of 2026-11-26. `FAIL` cells are gaps in accord, not harness problems:
+As of 2026-11-26, every cell passes. Treat any `FAIL` as a regression:
 
 | OS | boot | unit | detect | files | packages | services |
 | --- | --- | --- | --- | --- | --- | --- |
 | Ubuntu 26.04 | PASS | PASS | PASS | PASS | PASS | PASS |
 | Debian 13 | PASS | PASS | PASS | PASS | PASS | PASS |
-| Rocky Linux 10 | PASS | PASS | PASS | PASS | FAIL: no dnf | PASS |
-| Alpine 3.24 | PASS | PASS | PASS | PASS | FAIL: no apk | FAIL: no OpenRC |
-| FreeBSD 15.1 | PASS | PASS | FAIL: `os_family=unknown` | PASS | FAIL: no pkg | FAIL: no rc.d |
+| Rocky Linux 10 | PASS | PASS | PASS | PASS | PASS | PASS |
+| Alpine 3.24 | PASS | PASS | PASS | PASS | PASS | PASS |
+| FreeBSD 15.1 | PASS | PASS | PASS | PASS | PASS | PASS |
 
-When accord gains support for one of these, the cell should turn `PASS`
-without changes here. Update this table when it does.
+On Debian and Ubuntu the unit tests include the apt/dpkg/systemd integration
+tests (108 run); elsewhere those 4 skip.
 
 ## Adding an OS
 
@@ -91,6 +91,10 @@ Copy a `.conf` and fill in:
 - **BSD gives new files their directory's group**, Linux the creator's
   primary group. A file without `.group` has an OS-dependent group.
 - **Debian's genericcloud image has no cron**, hence `systemd-timesyncd`.
+- **Alpine's busybox has a `tree` applet**, so `command -v tree` finds it even
+  with the package removed. `guest.sh` asks the package database instead.
+- **Alpine ships `crond` stopped and disabled**, the others running and enabled.
+  The start/stop/start order covers both.
 - **Rocky's `ls -l` appends `.`** (SELinux context). `guest.sh` strips it.
 - **FreeBSD boots slowest**: about 2.5 minutes to SSH, against 15 seconds for
   the Linux images. The boot timeout is 15 minutes.

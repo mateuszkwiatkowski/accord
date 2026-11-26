@@ -47,22 +47,23 @@ Boolean (default: false). Continue on error.
 .SS Platform Support
 .TP
 .B apt
-(Debian, Ubuntu) \- Full support
+(Debian, Ubuntu) \- dpkg\-query, apt\-get install/remove. Version: name=version
 .TP
 .B dnf, yum
-(RedHat family) \- Planned
+(RedHat family) \- rpm \-q, dnf install/remove. Version: name\-version
+.TP
+.B apk
+(Alpine) \- apk info \-e, apk add \-\-update\-cache, apk del. Version: name=version
+.TP
+.B pkg
+(FreeBSD) \- pkg info \-e, pkg install/delete. Version: name\-version.
+Bootstraps pkg(8) on first install if needed.
 .TP
 .B pacman
 (Arch) \- Planned
 .TP
-.B apk
-(Alpine) \- Planned
-.TP
 .B brew
 (macOS) \- Planned
-.TP
-.B pkg
-(FreeBSD) \- Planned
 .SS Examples
 .EX
 .packages = .{
@@ -91,6 +92,25 @@ manager is found, operations fail with error.
 .PP
 Version support depends on package manager capabilities. Not all package managers
 support pinning specific versions.
+.SH PACKAGE CACHE RESOURCE
+Refreshes the package manager's index. Singular and nameless; it runs before
+every other resource, so packages are installed from a fresh index.
+.SS Platform Support
+apt\-get update (apt), dnf/yum makecache, apk update, pkg update.
+.SS Examples
+.EX
+\&.{
+    .package_cache = .{},
+    .packages = .{ .nginx = .{} },
+}
+.EE
+.SS Notes
+Always reported as needing changes: there is no portable way to tell how stale
+an index is.
+.PP
+.B .apt_update
+is accepted as an older name for
+.BR .package_cache .
 .SH FILE RESOURCE
 Manage file content, permissions, and ownership.
 .SS Attributes
@@ -266,19 +286,21 @@ Boolean (default: false). Continue on error.
 .SS Platform Support
 .TP
 .B systemd
-(Modern Linux) \- Full support
+(Modern Linux) \- systemctl is\-active/is\-enabled, start/stop, enable/disable
+.TP
+.B openrc
+(Alpine, Gentoo) \- rc\-service status/start/stop; enabled means in the
+.B default
+runlevel (rc\-update add/del)
+.TP
+.B rc
+(FreeBSD) \- service onestatus/onestart/onestop, service enabled/enable/disable
 .TP
 .B sysvinit
 (Legacy Linux) \- Planned
 .TP
 .B launchd
 (macOS) \- Planned
-.TP
-.B rc
-(BSD) \- Planned
-.TP
-.B openrc
-(Alpine, Gentoo) \- Planned
 .SS Examples
 .EX
 .services = .{
@@ -307,7 +329,7 @@ Init system is detected automatically. If no supported init system is found,
 operations fail with error.
 .PP
 Starting a stopped service and enabling a disabled service are separate operations.
-Both are performed if needed.
+Only the ones that differ from the current state are performed.
 .PP
 Service names must match system service names exactly (e.g., "nginx", "postgresql",
 "docker").

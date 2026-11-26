@@ -143,29 +143,29 @@ pub const OsFamily = enum {
 };
 
 pub const PkgManager = enum {
-    apt,         // Current: Debian/Ubuntu (apt-get)
-    yum,         // Future: Legacy RHEL
-    dnf,         // Future: Modern Fedora/RHEL
+    apt,         // Supported: Debian/Ubuntu (apt-get)
+    yum,         // Supported: Legacy RHEL
+    dnf,         // Supported: Modern Fedora/RHEL
     pacman,      // Future: Arch
-    apk,         // Future: Alpine
+    apk,         // Supported: Alpine
     brew,        // Future: macOS Homebrew
-    pkg,         // Future: FreeBSD
+    pkg,         // Supported: FreeBSD
     pkg_add,     // Future: OpenBSD
     pkgin,       // Future: NetBSD
 };
 
 pub const InitSystem = enum {
-    systemd,     // Current: Modern Linux
+    systemd,     // Supported: Modern Linux
     sysvinit,    // Future: Legacy init
     launchd,     // Future: macOS
-    rc,          // Future: BSD rc.d
-    openrc,      // Future: Alpine/Gentoo
+    rc,          // Supported: FreeBSD rc.d
+    openrc,      // Supported: Alpine/Gentoo
 };
 ```
 
 **Detection Strategy**:
-1. Check `/etc/os-release` for Linux distributions
-2. Check `uname` for BSD/macOS
+1. Outside Linux, `builtin.os.tag` (the binary is built for one OS)
+2. On Linux, `parseOsRelease` on `/etc/os-release`: `ID` first, then `ID_LIKE`
 3. Test for package manager presence (`which apt-get`, etc.)
 4. Test for init system (`systemctl --version`, etc.)
 5. Cache result for duration of run
@@ -753,17 +753,14 @@ pub const FileResource = struct {
 **Status**: ✅ **IMPLEMENTED** (see `src/resources/package.zig`)
 
 **Key Features**:
-- apt package manager support (install/remove)
-- Version pinning support (package=version)
+- apt, dnf/yum, apk and pkg backends (install/remove), all non-interactive
+- Version pinning in each manager's syntax (`name=ver` or `name-ver`)
 - Default state = installed
-- dpkg-query for package state checking
-- Non-interactive operations (-y flag)
 
 **Implementation Notes**:
-- Uses `dpkg-query -W -f='${Status}'` for checking package state
-- Supports version specification: `nginx=1.18.0-1`
-- Fixed-size argument arrays for simplicity
-- 9 comprehensive tests (all passing)
+- Backends are argv tables, not code paths: `checkArgv` (exits 0 when installed; apt also parses dpkg-query output) and `changeArgv`. A new manager is a new row in each plus a unit test.
+- Environment variables are set with `env VAR=value cmd`, not `environ_map`, which would replace the whole environment.
+- FreeBSD ships a `pkg` bootstrap stub; until `/usr/local/sbin/pkg` exists nothing counts as installed, and `ASSUME_ALWAYS_YES=yes` answers the bootstrap prompt.
 
 ```zig
 // src/resources/package.zig (reference example)
@@ -857,17 +854,13 @@ pub const PackageResource = struct {
 **Status**: ✅ **IMPLEMENTED** (see `src/resources/service.zig`)
 
 **Key Features**:
-- systemd init system support (start/stop/enable/disable)
-- Default state = running
-- Default enabled = true (enabled at boot)
-- Dual-state management (running state + enabled state)
-- Uses systemctl commands
+- systemd, OpenRC and FreeBSD rc.d backends (start/stop/enable/disable)
+- Default state = running, default enabled = true
 
 **Implementation Notes**:
-- Uses `systemctl is-active` for checking running state
-- Uses `systemctl is-enabled` for checking boot enable state
-- Applies both state changes in sequence (start/stop then enable/disable)
-- 10 comprehensive tests (all passing)
+- Backends are argv tables: `runningArgv`, `enabledArgv`, `stateArgv`, `enableArgv`. OpenRC's enabled state is the `/etc/runlevels/default/<name>` link.
+- `apply` re-reads the current state and runs only the commands that differ: rc.d's `onestart` exits 1 on a running service.
+- rc.d uses the `one*` verbs, which act whether or not `<name>_enable` is set in rc.conf.
 
 **Manifest Example**:
 ```zig
@@ -880,28 +873,19 @@ pub const PackageResource = struct {
 }
 ```
 
-### Example: AptUpdate Resource
+### Example: PackageCache Resource
 
-**Status**: ✅ **IMPLEMENTED** (see `src/resources/apt_update.zig`)
+**Status**: ✅ **IMPLEMENTED** (see `src/resources/package_cache.zig`)
 
-**Key Features**:
-- Updates apt package cache via `apt-get update`
-- Always runs (MVP - no frequency checking)
-- Nameless pattern following Chef's design
-- Runs BEFORE all other resources (especially packages)
-- Stderr capture for debugging
-
-**Implementation Notes**:
-- Singular resource (only one per manifest)
-- Default name: "update"
-- MVP always returns .needs_change to ensure fresh cache
-- Future: Could check `/var/lib/apt/periodic/update-success-stamp` for frequency
-- 6 comprehensive tests (all passing)
+- Refreshes the index with the system's manager (`refreshArgv`): apt-get update, dnf/yum makecache, apk update, pkg update
+- Singular and nameless; runs BEFORE all other resources
+- Always returns `.needs_change`: staleness is not portable to detect
+- Manifest key `.package_cache`; `.apt_update` is parsed as an alias, so old manifests keep working
 
 **Manifest Example**:
 ```zig
 .{
-    .apt_update = .{},  // Nameless pattern
+    .package_cache = .{},  // Nameless pattern
     
     .packages = .{
         .nginx = .{},
@@ -1055,7 +1039,7 @@ test "apply manifest - all resources" {
 
 ### System Tests
 
-Run `scripts/vm-test.sh` before calling a change done if it touches resources, detection, `utils.zig` or anything OS-specific. It boots arm64 VMs of Ubuntu 26.04, Debian 13, Rocky 10, Alpine 3.24 (musl) and FreeBSD 15.1 on the Mac, runs the unit tests and per-resource checks in each as root, and prints an OS × check table. Some cells `FAIL` today because accord lacks support there: compare against the "Current results" table in `test/vm/README.md`, and treat any *other* change as a regression. That README covers adding an OS, debugging with `--keep` / `ssh`, and the per-OS gotchas.
+Run `scripts/vm-test.sh` before calling a change done if it touches resources, detection, `utils.zig` or anything OS-specific. It boots arm64 VMs of Ubuntu 26.04, Debian 13, Rocky 10, Alpine 3.24 (musl) and FreeBSD 15.1 on the Mac, runs the unit tests and per-resource checks in each as root, and prints an OS × check table. Every cell passes today, so any `FAIL` is a regression; a new OS or resource should arrive with its cells passing (see "Current results" in `test/vm/README.md`). That README covers adding an OS, debugging with `--keep` / `ssh`, and the per-OS gotchas.
 
 `scripts/test-docker.sh` is a quicker Debian-only smoke test in a container (needs a container VM with more than 2 GB RAM, see Toolchain).
 
@@ -1157,25 +1141,26 @@ defer allocator.free(msg);
 
 ## Future Roadmap
 
-### Phase 1: Foundation (Current - Debian/Ubuntu) - NEARLY COMPLETE ✅
+### Phase 1: Foundation - NEARLY COMPLETE ✅
 - ✓ Project setup and documentation
 - ✓ ZON manifest parser (simplified, functional)
 - ✓ System detection (multi-platform: Linux, macOS, BSD)
 - ✓ File resource (content, mode, owner, group) with SHA256 hashing and atomic writes
 - ✓ Directory resource (mode, owner, group)
-- ✓ Package resource (apt support, version pinning, state management)
-- ✓ Service resource (systemd support, state and enabled management)
+- ✓ Package resource (version pinning, state management)
+- ✓ Service resource (state and enabled management)
 - [ ] User resource (pending)
 - [ ] Group resource (pending)
-- ✓ Unit and integration tests (99 tests)
+- ✓ Unit and integration tests (108 tests)
 - ✓ CLI with proper flags and exit codes
 
 ### Phase 2: Platform Expansion
-- RedHat family (dnf/yum, systemd)
+- ✓ Debian/Ubuntu (apt, systemd)
+- ✓ RedHat family (dnf/yum, systemd)
+- ✓ Alpine (apk, openrc)
+- ✓ FreeBSD (pkg, rc)
 - Arch Linux (pacman, systemd)
-- Alpine (apk, openrc)
 - macOS (brew, launchd)
-- FreeBSD (pkg, rc)
 - OpenBSD (pkg_add, rc)
 
 ### Phase 3: Daemon Mode

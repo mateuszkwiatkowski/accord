@@ -13,7 +13,7 @@ accord brings your system into accord with declarative manifests. Simple binary,
 - **Idempotent**: Run repeatedly, only makes necessary changes
 - **Type-Safe**: Zig's compile-time guarantees prevent common errors
 - **Sensible Defaults**: Minimal configuration for common operations
-- **Cross-Platform**: Designed for Linux, macOS, and BSD (Debian/Ubuntu supported now)
+- **Cross-Platform**: Debian, Ubuntu, the RHEL family, Alpine and FreeBSD supported now; designed for macOS and the other BSDs
 - **UNIX Philosophy**: Composable, focused tool with clear exit codes
 - **Fail-Fast**: Stop on first error, or opt-out with `allow_failure`
 - **Verbose**: Clear output showing exactly what's happening
@@ -129,7 +129,9 @@ Install or remove system packages.
 - `version`: Package version (optional)
 - `allow_failure`: Continue if operation fails (default: `false`)
 
-**Package Managers**: apt (Debian/Ubuntu). Future: dnf, pacman, apk, brew, pkg.
+**Package Managers**: apt (Debian/Ubuntu), dnf and yum (RHEL family), apk (Alpine), pkg (FreeBSD). Future: pacman, brew.
+
+To refresh the package index before installing (`apt-get update`, `dnf makecache`, `apk update`, `pkg update`), add `.package_cache = .{}` to the manifest. It runs before every other resource. `.apt_update = .{}` is accepted as an older name for it.
 
 ---
 
@@ -232,7 +234,7 @@ Manage system services (systemd, etc.).
 - `enabled`: Start at boot, `true` (default) or `false`
 - `allow_failure`: Continue if operation fails
 
-**Init Systems**: systemd (current). Future: sysvinit, launchd, rc, openrc.
+**Init Systems**: systemd, OpenRC (Alpine), rc.d (FreeBSD). Future: sysvinit, launchd.
 
 ---
 
@@ -644,9 +646,14 @@ Container host configuration:
 
 ### Currently Supported
 
-- **Debian** and **Ubuntu**: everything (apt, systemd)
-- **Rocky Linux / RHEL family**: files, directories, services (systemd); packages (dnf) not yet
-- **Alpine Linux** (musl) and **FreeBSD**: files and directories; packages and services not yet
+| OS | Packages | Services |
+| --- | --- | --- |
+| Debian, Ubuntu | apt | systemd |
+| RHEL family (Rocky, Alma, Fedora) | dnf, yum | systemd |
+| Alpine Linux (musl) | apk | OpenRC |
+| FreeBSD | pkg | rc.d |
+
+Files and directories work on all of them.
 
 These are tested on real VMs of Ubuntu 26.04, Debian 13, Rocky Linux 10,
 Alpine 3.24 and FreeBSD 15.1 (arm64). See [test/vm/README.md](test/vm/README.md)
@@ -656,16 +663,10 @@ for the current results.
 
 accord is designed for cross-platform support from the ground up.
 
-**Phase 2** (Planned):
-- RedHat family (RHEL, CentOS, Fedora, Rocky)
-- Arch Linux
-- Alpine Linux
-
-**Phase 3** (Future):
+**Planned**:
+- Arch Linux (pacman)
 - macOS (Homebrew + launchd)
-- FreeBSD
-- OpenBSD
-- NetBSD
+- OpenBSD, NetBSD
 
 See [AGENTS.md](AGENTS.md) for extensibility guide.
 

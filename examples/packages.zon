@@ -3,7 +3,7 @@
 
 .{
     // Always update package cache before installing packages
-    .apt_update = .{},
+    .package_cache = .{},
 
     // Install essential packages
     .packages = .{

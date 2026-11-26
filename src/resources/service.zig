@@ -1,6 +1,7 @@
 const std = @import("std");
 const resource = @import("resource.zig");
 const system = @import("../system.zig");
+const output = @import("../output.zig");
 
 pub const ServiceResource = struct {
     base: resource.ResourceBase = .{},
@@ -12,123 +13,57 @@ pub const ServiceResource = struct {
     pub const ServiceState = enum { running, stopped };
 
     pub fn check(self: *ServiceResource, sys: *const system.SystemInfo) !resource.ResourceState {
-        return switch (sys.init_system orelse return error.NoInitSystem) {
-            .systemd => try self.checkSystemd(sys.io),
-            else => error.UnsupportedInitSystem,
-        };
-    }
-
-    fn checkSystemd(self: *ServiceResource, io: std.Io) !resource.ResourceState {
-        // Check if service is running
-        // systemctl is-active returns 0 if active, non-zero otherwise
-        const is_active_args = [_][]const u8{ "systemctl", "is-active", self.name };
-
-        var is_active_child = try std.process.spawn(io, .{
-            .argv = &is_active_args,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
-        const is_active_term = try is_active_child.wait(io);
-        const is_running = is_active_term.success();
-
-        // Check if service is enabled
-        // systemctl is-enabled returns 0 if enabled
-        const is_enabled_args = [_][]const u8{ "systemctl", "is-enabled", self.name };
-
-        var is_enabled_child = try std.process.spawn(io, .{
-            .argv = &is_enabled_args,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
-        const is_enabled_term = try is_enabled_child.wait(io);
-        const is_enabled = is_enabled_term.success();
-
-        // Check if desired state matches
-        const state_matches = (is_running and self.state == .running) or
-            (!is_running and self.state == .stopped);
-        const enabled_matches = (is_enabled == self.enabled);
-
-        return if (state_matches and enabled_matches)
+        const init = sys.init_system orelse return error.NoInitSystem;
+        const current = try queryState(sys.io, init, self.name);
+        return if (current.running == (self.state == .running) and current.enabled == self.enabled)
             .satisfied
         else
             .needs_change;
     }
 
     pub fn apply(self: *ServiceResource, sys: *const system.SystemInfo, dry_run: bool) !resource.ResourceResult {
-        return switch (sys.init_system orelse return error.NoInitSystem) {
-            .systemd => try self.applySystemd(sys.io, dry_run),
-            else => error.UnsupportedInitSystem,
-        };
-    }
-
-    fn applySystemd(self: *ServiceResource, io: std.Io, dry_run: bool) !resource.ResourceResult {
+        const init = sys.init_system orelse return error.NoInitSystem;
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
+        const state_str = if (self.state == .running) "start" else "stop";
+        const enabled_str = if (self.enabled) "enable" else "disable";
+
         if (dry_run) {
-            const output_mod = @import("../output.zig");
-            const action = if (self.state == .running) "start" else "stop";
-            const enabled_action = if (self.enabled) "enable" else "disable";
-            const msg = try std.fmt.allocPrint(
-                allocator,
-                "would {s} and {s}",
-                .{ action, enabled_action },
-            );
-            output_mod.logApply("Service", self.name, msg);
+            // Fail on an unsupported init system in dry runs too
+            _ = try stateArgv(init, self.state, self.name);
+            const msg = try std.fmt.allocPrint(allocator, "would {s} and {s}", .{ state_str, enabled_str });
+            output.logApply("Service", self.name, msg);
             return .{
                 .state = .needs_change,
                 .changed = true,
             };
         }
 
-        // Apply state change (start/stop)
-        const state_args = switch (self.state) {
-            .running => [_][]const u8{ "systemctl", "start", self.name },
-            .stopped => [_][]const u8{ "systemctl", "stop", self.name },
-        };
+        // Only change what differs: rc.d and OpenRC treat starting a running
+        // service or re-adding an enabled one as an error
+        const current = try queryState(sys.io, init, self.name);
 
-        const output_mod = @import("../output.zig");
-
-        var state_child = try std.process.spawn(io, .{
-            .argv = &state_args,
-            .stdout = .ignore,
-            .stderr = .inherit, // Let stderr pass through directly
-        });
-        const state_term = try state_child.wait(io);
-
-        if (!state_term.success()) {
-            output_mod.logError("Service", self.name, "systemctl state change failed");
-            return error.ServiceStateChangeFailed;
+        if (current.running != (self.state == .running)) {
+            if (!try run(sys.io, try stateArgv(init, self.state, self.name))) {
+                output.logError("Service", self.name, "state change failed");
+                return error.ServiceStateChangeFailed;
+            }
         }
 
-        // Apply enabled/disabled change
-        const enabled_args = if (self.enabled)
-            [_][]const u8{ "systemctl", "enable", self.name }
-        else
-            [_][]const u8{ "systemctl", "disable", self.name };
-
-        var enabled_child = try std.process.spawn(io, .{
-            .argv = &enabled_args,
-            .stdout = .ignore,
-            .stderr = .inherit, // Let stderr pass through directly
-        });
-        const enabled_term = try enabled_child.wait(io);
-
-        if (!enabled_term.success()) {
-            output_mod.logError("Service", self.name, "systemctl enable/disable failed");
-            return error.ServiceEnableChangeFailed;
+        if (current.enabled != self.enabled) {
+            if (!try run(sys.io, try enableArgv(init, self.enabled, self.name))) {
+                output.logError("Service", self.name, "enable/disable failed");
+                return error.ServiceEnableChangeFailed;
+            }
         }
 
-        // Log success
-        const state_str = if (self.state == .running) "started" else "stopped";
-        const enabled_str = if (self.enabled) "enabled" else "disabled";
-        const msg = try std.fmt.allocPrint(
-            allocator,
-            "{s} and {s}",
-            .{ state_str, enabled_str },
-        );
-        output_mod.logApply("Service", self.name, msg);
+        const msg = try std.fmt.allocPrint(allocator, "{s}ed and {s}d", .{
+            if (self.state == .running) "start" else "stopp",
+            enabled_str,
+        });
+        output.logApply("Service", self.name, msg);
 
         return .{
             .state = .satisfied,
@@ -140,6 +75,87 @@ pub const ServiceResource = struct {
         return self.name;
     }
 };
+
+const ServiceStatus = struct { running: bool, enabled: bool };
+
+/// Ask the init system whether `name` is running and enabled at boot
+fn queryState(io: std.Io, init: system.InitSystem, name: []const u8) !ServiceStatus {
+    const running = try succeeds(io, try runningArgv(init, name));
+    const enabled = switch (init) {
+        // OpenRC enables a service by linking it into the runlevel directory
+        .openrc => blk: {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const path = try std.fmt.bufPrint(&buf, "/etc/runlevels/default/{s}", .{name});
+            std.Io.Dir.accessAbsolute(io, path, .{}) catch break :blk false;
+            break :blk true;
+        },
+        else => try succeeds(io, try enabledArgv(init, name)),
+    };
+    return .{ .running = running, .enabled = enabled };
+}
+
+/// Command that exits 0 when `name` is running
+pub fn runningArgv(init: system.InitSystem, name: []const u8) ![3][]const u8 {
+    return switch (init) {
+        .systemd => .{ "systemctl", "is-active", name },
+        .openrc => .{ "rc-service", name, "status" },
+        // one*: act regardless of the rc.conf enable knob
+        .rc => .{ "service", name, "onestatus" },
+        else => error.UnsupportedInitSystem,
+    };
+}
+
+/// Command that exits 0 when `name` is enabled at boot (not used for OpenRC)
+pub fn enabledArgv(init: system.InitSystem, name: []const u8) ![3][]const u8 {
+    return switch (init) {
+        .systemd => .{ "systemctl", "is-enabled", name },
+        .rc => .{ "service", name, "enabled" },
+        else => error.UnsupportedInitSystem,
+    };
+}
+
+/// Command that starts or stops `name`
+pub fn stateArgv(init: system.InitSystem, state: ServiceResource.ServiceState, name: []const u8) ![3][]const u8 {
+    const start = state == .running;
+    return switch (init) {
+        .systemd => .{ "systemctl", if (start) "start" else "stop", name },
+        .openrc => .{ "rc-service", name, if (start) "start" else "stop" },
+        .rc => .{ "service", name, if (start) "onestart" else "onestop" },
+        else => error.UnsupportedInitSystem,
+    };
+}
+
+/// Command that enables or disables `name` at boot
+pub fn enableArgv(init: system.InitSystem, enabled: bool, name: []const u8) ![4][]const u8 {
+    return switch (init) {
+        .systemd => .{ "systemctl", if (enabled) "enable" else "disable", name, "--quiet" },
+        .openrc => .{ "rc-update", if (enabled) "add" else "del", name, "default" },
+        .rc => .{ "service", name, if (enabled) "enable" else "disable", "-q" },
+        else => error.UnsupportedInitSystem,
+    };
+}
+
+/// Run a query command silently; true if it exits 0
+fn succeeds(io: std.Io, argv: [3][]const u8) !bool {
+    var child = try std.process.spawn(io, .{
+        .argv = &argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    return (try child.wait(io)).success();
+}
+
+/// Run a changing command, letting its stderr through; true if it exits 0
+fn run(io: std.Io, argv: anytype) !bool {
+    var child = try std.process.spawn(io, .{
+        .argv = &argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    });
+    return (try child.wait(io)).success();
+}
 
 // Tests
 const testing = std.testing;
@@ -281,4 +297,41 @@ test "ServiceResource check - systemd available" {
     const state = svc.check(&sys_info) catch return error.SkipZigTest;
     // We can't assert state since we don't know if it's running/enabled
     _ = state;
+}
+
+fn expectArgv(expected: []const []const u8, actual: []const []const u8) !void {
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |e, a| try testing.expectEqualStrings(e, a);
+}
+
+test "service commands - systemd" {
+    try expectArgv(&.{ "systemctl", "is-active", "cron" }, &try runningArgv(.systemd, "cron"));
+    try expectArgv(&.{ "systemctl", "is-enabled", "cron" }, &try enabledArgv(.systemd, "cron"));
+    try expectArgv(&.{ "systemctl", "start", "cron" }, &try stateArgv(.systemd, .running, "cron"));
+    try expectArgv(&.{ "systemctl", "stop", "cron" }, &try stateArgv(.systemd, .stopped, "cron"));
+    try expectArgv(&.{ "systemctl", "enable", "cron", "--quiet" }, &try enableArgv(.systemd, true, "cron"));
+    try expectArgv(&.{ "systemctl", "disable", "cron", "--quiet" }, &try enableArgv(.systemd, false, "cron"));
+}
+
+test "service commands - OpenRC" {
+    try expectArgv(&.{ "rc-service", "crond", "status" }, &try runningArgv(.openrc, "crond"));
+    try expectArgv(&.{ "rc-service", "crond", "start" }, &try stateArgv(.openrc, .running, "crond"));
+    try expectArgv(&.{ "rc-service", "crond", "stop" }, &try stateArgv(.openrc, .stopped, "crond"));
+    try expectArgv(&.{ "rc-update", "add", "crond", "default" }, &try enableArgv(.openrc, true, "crond"));
+    try expectArgv(&.{ "rc-update", "del", "crond", "default" }, &try enableArgv(.openrc, false, "crond"));
+}
+
+test "service commands - BSD rc.d" {
+    try expectArgv(&.{ "service", "cron", "onestatus" }, &try runningArgv(.rc, "cron"));
+    try expectArgv(&.{ "service", "cron", "enabled" }, &try enabledArgv(.rc, "cron"));
+    try expectArgv(&.{ "service", "cron", "onestart" }, &try stateArgv(.rc, .running, "cron"));
+    try expectArgv(&.{ "service", "cron", "onestop" }, &try stateArgv(.rc, .stopped, "cron"));
+    try expectArgv(&.{ "service", "cron", "enable", "-q" }, &try enableArgv(.rc, true, "cron"));
+    try expectArgv(&.{ "service", "cron", "disable", "-q" }, &try enableArgv(.rc, false, "cron"));
+}
+
+test "service commands - unsupported init systems" {
+    try testing.expectError(error.UnsupportedInitSystem, runningArgv(.launchd, "x"));
+    try testing.expectError(error.UnsupportedInitSystem, stateArgv(.sysvinit, .running, "x"));
+    try testing.expectError(error.UnsupportedInitSystem, enableArgv(.launchd, true, "x"));
 }
