@@ -24,19 +24,41 @@ accord brings your system into accord with declarative manifests. Simple binary,
 
 ### Installation
 
+#### From a release
+
+Each [release](https://github.com/mateuszkwiatkowski/accord/releases) has one archive per platform, a `SHA256SUMS` file and its minisign signature:
+
+| Archive | Runs on |
+| --- | --- |
+| `accord-VERSION-{aarch64,x86_64}-linux-gnu.tar.gz` | Linux with glibc 2.34 or newer (RHEL 9+, Debian 12+, Ubuntu 22.04+) |
+| `accord-VERSION-{aarch64,x86_64}-linux-musl.tar.gz` | Any Linux, Alpine included (static binary) |
+| `accord-VERSION-{aarch64,x86_64}-freebsd.tar.gz` | FreeBSD 14 or newer |
+
+On glibc systems prefer the `gnu` archive: the static `musl` binary reads users and groups only from `/etc/passwd` and `/etc/group`, so accounts from LDAP, sssd or other NSS sources are invisible to it (for `.owner`, `.group` and the user resource).
+
 ```bash
-# Clone repository
+v=0.1.0 t=x86_64-linux-gnu
+base=https://github.com/mateuszkwiatkowski/accord/releases/download/v$v
+curl -fLO "$base/accord-$v-$t.tar.gz" -fLO "$base/SHA256SUMS" -fLO "$base/SHA256SUMS.minisig"
+
+# Check the signature with minisign.pub from this repository, then the archive
+minisign -Vm SHA256SUMS -p minisign.pub
+sha256sum --ignore-missing -c SHA256SUMS
+
+tar -xzf "accord-$v-$t.tar.gz"
+sudo cp "accord-$v-$t/bin/accord" /usr/local/bin/
+sudo cp -R "accord-$v-$t/share/man/." /usr/local/share/man/
+```
+
+Archives also carry GitHub build provenance: `gh attestation verify accord-$v-$t.tar.gz -R mateuszkwiatkowski/accord`.
+
+#### From source
+
+```bash
 git clone https://github.com/mateuszkwiatkowski/accord
 cd accord
-
-# Install the pinned Zig toolchain (optional, see mise.toml)
-mise install
-
-# Build
-zig build -Doptimize=ReleaseSafe
-
-# Install (optional)
-sudo cp zig-out/bin/accord /usr/local/bin/
+mise install    # the pinned Zig toolchain (or install Zig 0.17.1 yourself)
+zig build -Doptimize=ReleaseSafe --prefix /usr/local install   # binary and man pages
 ```
 
 **Requirements**: Zig 0.17.1 (pinned in `mise.toml`; [mise](https://mise.jdx.dev) installs it automatically)
@@ -369,21 +391,6 @@ accord apply --log-level=verbose manifest.zon # All checks (default)
 accord apply --log-level=debug manifest.zon   # Debug details
 ```
 
-**`--config=PATH`**  
-Load configuration from file.
-
-```bash
-accord apply --config=/etc/accord/config.zon manifest.zon
-```
-
-Config file format (ZON):
-```zig
-.{
-    .log_level = .verbose,
-    .color = true,
-}
-```
-
 **`--version, -V`**  
 Show version information.
 
@@ -396,8 +403,7 @@ accord uses UNIX-standard exit codes:
 
 - **0**: Success - all resources satisfied or applied
 - **1**: General error
-- **2**: Invalid manifest (parse error)
-- **3**: Permission denied
+- **2**: Invalid manifest (parse error); nothing is applied
 - **4**: Resource operation failed
 
 Use in scripts:
@@ -664,8 +670,8 @@ Container host configuration:
 Files and directories work on all of them.
 
 These are tested on real VMs of Ubuntu 26.04, Debian 13, Rocky Linux 10,
-Alpine 3.24 and FreeBSD 15.1 (arm64). See [test/vm/README.md](test/vm/README.md)
-for the current results.
+Alpine 3.24 and FreeBSD 15.1, on arm64 and x86_64, with the release archives.
+See [test/vm/README.md](test/vm/README.md) for the current results.
 
 ### Roadmap
 
@@ -742,9 +748,11 @@ zig build test
 # Test on real VMs of every supported OS (Apple silicon Mac + QEMU)
 scripts/vm-test.sh
 
-# Install locally
-sudo zig build install
+# Install locally (binary and man pages)
+sudo zig build -Doptimize=ReleaseSafe --prefix /usr/local install
 ```
+
+Releases: see the checklist in [AGENTS.md](AGENTS.md) ("Releasing") and [CHANGELOG.md](CHANGELOG.md).
 
 See [AGENTS.md](AGENTS.md) for architecture and development guide.
 

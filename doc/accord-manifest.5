@@ -1,4 +1,4 @@
-.TH ACCORD-MANIFEST 5 "January 2026" "accord 0.1.0" "File Formats"
+.TH ACCORD-MANIFEST 5 "@DATE@" "accord @VERSION@" "File Formats"
 .SH NAME
 accord\-manifest \- ZON manifest format for accord
 .SH DESCRIPTION
@@ -18,7 +18,7 @@ indentation.
 A manifest is a ZON struct containing resource sections:
 .PP
 .EX
-.{
+\&.{
     .packages = .{ /* package resources */ },
     .files = .{ /* file resources */ },
     .directories = .{ /* directory resources */ },
@@ -33,7 +33,7 @@ All sections are optional. Include only the resources you need.
 Install or remove system packages.
 .PP
 .EX
-.packages = .{
+\&.packages = .{
     .nginx = .{},  // Install (default)
     .apache2 = .{ .state = .absent },  // Remove
     .nodejs = .{ .version = "18.0.0" },
@@ -56,7 +56,7 @@ Attributes:
 Manage file content, permissions, and ownership.
 .PP
 .EX
-.files = .{
+\&.files = .{
     .@"/etc/myapp/config.ini" = .{
         .content = 
             \\\\[database]
@@ -100,7 +100,7 @@ Attributes:
 Ensure directories exist with correct permissions.
 .PP
 .EX
-.directories = .{
+\&.directories = .{
     .@"/var/www" = .{
         .mode = 0o755,
         .owner = "www-data",
@@ -134,7 +134,7 @@ Attributes:
 Manage system services.
 .PP
 .EX
-.services = .{
+\&.services = .{
     .nginx = .{},  // Running + enabled (defaults)
     .apache2 = .{
         .state = .stopped,
@@ -161,7 +161,7 @@ Create, update and remove user accounts. See
 for every attribute.
 .PP
 .EX
-.users = .{
+\&.users = .{
     .deployer = .{
         .uid = 1001,
         .group = "deployer",
@@ -174,7 +174,7 @@ for every attribute.
 Create and remove groups.
 .PP
 .EX
-.groups = .{
+\&.groups = .{
     .appgroup = .{ .gid = 1001 },
     .developers = .{},
 }
@@ -185,12 +185,12 @@ ZON is Zig's data format. Key syntax elements:
 .TP
 .B Struct literal
 .EX
-.{ .field = value }
+\&.{ .field = value }
 .EE
 .TP
 .B String with @ for special chars
 .EX
-.@"/path/with/special-chars"
+\&.@"/path/with/special-chars"
 .EE
 .TP
 .B Multi-line string
@@ -207,15 +207,15 @@ ZON is Zig's data format. Key syntax elements:
 .TP
 .B Enum values
 .EX
-.installed
-.absent
-.running
-.stopped
+\&.installed
+\&.absent
+\&.running
+\&.stopped
 .EE
 .TP
 .B Arrays
 .EX
-.{ "item1", "item2", "item3" }
+\&.{ "item1", "item2", "item3" }
 .EE
 .TP
 .B Comments
@@ -272,7 +272,7 @@ There is no automatic dependency resolution.
 By default, accord stops on the first error (fail-fast). Override per-resource:
 .PP
 .EX
-.packages = .{
+\&.packages = .{
     .critical = .{},  // Must succeed
     .optional = .{
         .allow_failure = true,  // Continue on error
@@ -282,7 +282,7 @@ By default, accord stops on the first error (fail-fast). Override per-resource:
 .SH EXAMPLES
 .SS Web Server
 .EX
-.{
+\&.{
     .packages = .{
         .nginx = .{},
     },
@@ -299,7 +299,7 @@ By default, accord stops on the first error (fail-fast). Override per-resource:
 .EE
 .SS User Creation
 .EX
-.{
+\&.{
     .groups = .{
         .developers = .{ .gid = 1001 },
     },

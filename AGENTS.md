@@ -33,7 +33,6 @@
 accord/
 ├── src/
 │   ├── main.zig              # Entry point, CLI parsing, main loop
-│   ├── config.zig            # Config file parsing
 │   ├── parser.zig            # ZON manifest parser
 │   ├── system.zig            # Platform detection and abstraction
 │   ├── apply.zig             # Resource application engine
@@ -69,14 +68,19 @@ accord/
 │   ├── database.zon
 │   └── docker-host.zon
 ├── build.zig                 # Build configuration
-├── build.zig.zon             # Package metadata, minimum_zig_version
+├── build.zig.zon             # Package metadata, the version, minimum_zig_version
 ├── AGENTS.md                 # This file
 ├── README.md                 # User-facing documentation
+├── CHANGELOG.md              # Release notes, one section per version
 ├── LICENSE                   # MIT license
+├── minisign.pub              # Release signing key (added by the maintainer)
+├── .github/workflows/        # ci.yml (every push), release.yml (v* tags)
+├── tools/stamp_man.zig       # Fills @VERSION@ and @DATE@ into the man pages
 ├── scripts/
+│   ├── release.sh            # Release archives, SHA256SUMS, signature
 │   ├── vm-test.sh            # VM test matrix runner (see test/vm/README.md)
 │   └── test-docker.sh        # Debian container smoke test
-└── doc/
+└── doc/                      # Man page sources, installed to share/man/man{1,5,7}
     ├── accord.1              # Main command man page
     ├── accord-manifest.5     # Manifest format specification
     └── accord-resources.7    # Resource types reference
@@ -86,7 +90,6 @@ accord/
 
 #### `main.zig`
 - Parse command-line arguments
-- Load config file if specified with `--config`
 - Initialize system detection
 - Parse manifest
 - Execute resource application
@@ -97,19 +100,7 @@ accord/
 - `0` - Success (all resources satisfied or applied)
 - `1` - General error
 - `2` - Invalid manifest (parse error)
-- `3` - Permission denied
 - `4` - Resource operation failed
-
-#### `config.zig`
-- Parse ZON config file
-- Merge config with CLI flags (CLI takes precedence)
-- Config structure:
-  ```zig
-  .{
-      .log_level = .verbose,  // .quiet, .normal, .verbose, .debug
-      .color = true,          // Enable colored output
-  }
-  ```
 
 #### `parser.zig`
 - `std.zig.Ast` + `ZonGen` build the tree; `Parser` walks the top level and each section's keys (paths and names are not known at compile time)
@@ -1061,6 +1052,8 @@ Zig **0.17.1**, pinned in `mise.toml` (`mise install`), `build.zig.zon` (`minimu
 - **libc via `std.c`**: `@cImport` no longer exists. `utils.zig` calls `std.c.getpwnam`/`getgrnam`/`stat`/`fchownat` directly (`link_libc = true` in `build.zig`). `chown` stays on libc because `std.Io.Dir.setFileOwner` panics with "TODO" in 0.17.1; `std.Io.File.Stat` exposes no uid/gid.
 - **Mode bits**: `stat.permissions.toMode()`, `File.Permissions.fromMode(mode)`.
 - **Cross-compiling**: `zig build install test-bin -Dtarget=aarch64-linux-gnu|aarch64-linux-musl|aarch64-freebsd` builds `accord` and the unit test binary (`bin/accord-test`) for another OS; `scripts/vm-test.sh` relies on it. Anything using `std.c` types must compile for all three: `std.c.Stat` is `void` on Linux, so `utils.getFileOwnership` uses `statx` there.
+- **Version**: `build.zig` imports `.version` from `build.zig.zon` and passes it to the code as `@import("build_options").version` and to the man pages. It is the only place to change it.
+- **Man pages**: write `@VERSION@`/`@DATE@` in `.TH`; `zig build install` stamps them (`-Ddate=YYYY-MM-DD`). A content line starting with `.` (ZON examples) must be written `\&.` or mandoc drops it as an unknown macro. CI runs `mandoc -T lint -W warning` on the installed pages.
 - **Detection line**: `--log-level=debug` prints `os_family=… pkg_manager=… init_system=… user_tool=…` from `SystemInfo.detect`; the VM `detect` check asserts on its exact format.
 
 Testing environments:
@@ -1192,7 +1185,7 @@ defer allocator.free(msg);
 
 ### 2. File Permissions
 **Problem**: Running as non-root fails silently  
-**Solution**: Return proper error codes (exit 3 for permission denied), check permissions early
+**Solution**: Fail with the underlying error (AccessDenied, ...) so the run exits 4 with the reason logged
 
 ### 3. Idempotency
 **Problem**: Resource applies change even when not needed  
@@ -1247,6 +1240,17 @@ scripts/vm-test.sh                     # Every OS in test/vm/, as root, in throw
 git add .
 git commit -m "Add new resource type: newresource"
 ```
+
+## Releasing
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: the CI checks, then `scripts/release.sh`, which fails unless the tag equals `build.zig.zon`'s version, builds the six archives (aarch64/x86_64 × linux-gnu, linux-musl, freebsd; ReleaseSafe, stripped, glibc 2.34 floor), writes `SHA256SUMS` and signs it with the `MINISIGN_SECRET_KEY` secret, checked against the committed `minisign.pub`. It then attests the archives and publishes a GitHub Release whose notes are the version's `CHANGELOG.md` section (a tag with `-`, like `v0.2.0-rc1`, is a prerelease).
+
+1. Set `.version` in `build.zig.zon`; turn `CHANGELOG.md`'s section into `## [X.Y.Z] - YYYY-MM-DD`
+2. `scripts/release.sh X.Y.Z`, then `scripts/vm-test.sh --release` (arm64, ~5 min); for larger changes also `--arch x86_64 --release` (emulated, ~10 min cached). Every cell must pass
+3. Commit, `git tag vX.Y.Z`, push the commit and the tag
+4. Check the release page: six archives, `SHA256SUMS`, `SHA256SUMS.minisig`
+
+One-time setup, done by the maintainer only: `minisign -G -W -p minisign.pub -s minisign.key` (`-W`: no password, CI cannot type one), commit `minisign.pub`, store the contents of `minisign.key` as the repository secret `MINISIGN_SECRET_KEY`, and keep the key file offline.
 
 ---
 

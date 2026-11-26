@@ -4,7 +4,7 @@ const system = @import("system.zig");
 const parser = @import("parser.zig");
 const apply = @import("apply.zig");
 
-const VERSION = "0.1.0";
+const VERSION = @import("build_options").version;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -149,7 +149,6 @@ fn printHelp() void {
         \\    0    Success
         \\    1    General error
         \\    2    Invalid manifest
-        \\    3    Permission denied
         \\    4    Resource operation failed
         \\
     , .{});

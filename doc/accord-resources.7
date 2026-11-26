@@ -1,4 +1,4 @@
-.TH ACCORD-RESOURCES 7 "January 2026" "accord 0.1.0" "Miscellaneous"
+.TH ACCORD-RESOURCES 7 "@DATE@" "accord @VERSION@" "Miscellaneous"
 .SH NAME
 accord\-resources \- resource types reference for accord
 .SH DESCRIPTION
@@ -15,7 +15,7 @@ Boolean (default: false). If true, accord continues applying remaining resources
 even if this resource fails. If false, accord stops immediately on failure (fail-fast).
 .PP
 .EX
-.packages = .{
+\&.packages = .{
     .critical = .{},
     .optional = .{
         .allow_failure = true,
@@ -66,7 +66,7 @@ Bootstraps pkg(8) on first install if needed.
 (macOS) \- Planned
 .SS Examples
 .EX
-.packages = .{
+\&.packages = .{
     // Install nginx (default)
     .nginx = .{},
     
@@ -151,7 +151,7 @@ Boolean (default: false). Continue on error.
 All platforms supported. Owner/group management requires UNIX-like systems.
 .SS Examples
 .EX
-.files = .{
+\&.files = .{
     // Simple file with content
     .@"/etc/motd" = .{
         .content = "Welcome to this system!",
@@ -232,7 +232,7 @@ Boolean (default: false). Continue on error.
 All platforms supported. Owner/group management requires UNIX-like systems.
 .SS Examples
 .EX
-.directories = .{
+\&.directories = .{
     // Simple directory
     .@"/opt/myapp" = .{},
     
@@ -303,7 +303,7 @@ runlevel (rc\-update add/del)
 (macOS) \- Planned
 .SS Examples
 .EX
-.services = .{
+\&.services = .{
     // Start and enable service (defaults)
     .nginx = .{},
     
@@ -395,7 +395,7 @@ The current state is read through libc (getpwnam, getgrent), not from the
 output of these tools.
 .SS Examples
 .EX
-.users = .{
+\&.users = .{
     // System defaults for everything
     .developer = .{},
 
@@ -444,7 +444,7 @@ groupadd/groupdel (shadow), addgroup/delgroup (busybox), pw groupadd/groupdel
 (FreeBSD).
 .SS Examples
 .EX
-.groups = .{
+\&.groups = .{
     .developers = .{},
     .appgroup = .{ .gid = 1001 },
     .oldgroup = .{ .state = .absent },
@@ -464,7 +464,7 @@ Resources fail-fast by default. First error stops execution. Use
 for optional resources:
 .PP
 .EX
-.packages = .{
+\&.packages = .{
     .nginx = .{},  // Critical
     .vim = .{
         .allow_failure = true,  // Optional

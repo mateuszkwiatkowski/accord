@@ -9,6 +9,8 @@
         "build.zig.zon",
         "src",
         "doc",
+        "tools",
+        "CHANGELOG.md",
         "LICENSE",
         "README.md",
     },

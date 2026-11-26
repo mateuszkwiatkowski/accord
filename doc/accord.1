@@ -1,8 +1,12 @@
-.TH ACCORD 1 "January 2026" "accord 0.1.0" "User Commands"
+.TH ACCORD 1 "@DATE@" "accord @VERSION@" "User Commands"
 .SH NAME
 accord \- lightweight configuration management
 .SH SYNOPSIS
 .B accord apply
+[\fIOPTIONS\fR]
+.I MANIFEST
+.br
+.B accord
 [\fIOPTIONS\fR]
 .I MANIFEST
 .br
@@ -47,10 +51,6 @@ Set logging verbosity. Available levels:
 \- Internal details for debugging
 .RE
 .TP
-.BR \-\-config =\fIPATH\fR
-Load configuration from file. Config file should be in ZON format. CLI options
-override config file settings. There is no default config file location.
-.TP
 .BR \-V ", " \-\-version
 Show version information and exit.
 .TP
@@ -66,13 +66,13 @@ Success. All resources satisfied or applied successfully.
 General error. An unexpected error occurred.
 .TP
 .B 2
-Invalid manifest. Parse error or validation failure.
-.TP
-.B 3
-Permission denied. Insufficient privileges for operation.
+Invalid manifest: unreadable, a syntax error, an unknown section or
+attribute, or a wrong value. Nothing is applied. The message names the file,
+line and column.
 .TP
 .B 4
-Resource operation failed. One or more resources failed to apply.
+Resource operation failed. One or more resources failed to apply, including
+running without the privileges the change needs.
 .SH EXAMPLES
 .TP
 Apply a manifest:
@@ -90,11 +90,6 @@ Apply with debug logging:
 sudo accord apply \-\-log\-level=debug manifest.zon
 .EE
 .TP
-Apply with config file:
-.EX
-sudo accord apply \-\-config=/etc/accord/config.zon manifest.zon
-.EE
-.TP
 Use in shell script:
 .EX
 if accord apply manifest.zon; then
@@ -103,30 +98,20 @@ else
     echo "Configuration failed with exit code $?"
 fi
 .EE
-.SH FILES
-No default configuration files. Specify config file with
-.B \-\-config
-option if needed.
-.PP
-Config file format (ZON):
-.EX
-.{
-    .log_level = .verbose,
-    .color = true,
-}
-.EE
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
-If set (any value), disable colored output regardless of config.
+If set (any value), disable colored output.
 .SH NOTES
 accord requires appropriate permissions to modify system state. Most operations
 require root privileges. Use
 .B sudo
 or run as root.
 .PP
-Manifests are applied sequentially in the order resources appear. There is no
-automatic dependency resolution. Order your resources appropriately.
+Sections are applied in a fixed order (package cache, packages, groups, users,
+directories, files, services) and resources within a section in manifest
+order. There is no automatic dependency resolution; see
+.BR accord\-manifest (5).
 .PP
 Running accord multiple times with the same manifest is safe (idempotent). Only
 necessary changes will be applied.

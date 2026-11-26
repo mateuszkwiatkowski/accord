@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"] # tags go through release.yml
+  pull_request:
+  # release.yml runs these checks before building a release
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2 # Zig from mise.toml
+      - run: sudo apt-get update && sudo apt-get install -y mandoc
+      - name: zig fmt
+        run: zig fmt --check src tools build.zig build.zig.zon
+      - name: shellcheck
+        run: shellcheck -s sh scripts/vm-test.sh scripts/release.sh test/vm/guest.sh
+      - name: Man pages
+        run: |
+          zig build -Ddate=2000-01-01 --prefix "$RUNNER_TEMP/man"
+          mandoc -T lint -W warning "$RUNNER_TEMP"/man/share/man/man*/*
+      - name: Cross-compile every release target
+        run: |
+          for t in aarch64-linux-gnu.2.34 x86_64-linux-gnu.2.34 aarch64-linux-musl \
+                   x86_64-linux-musl aarch64-freebsd x86_64-freebsd; do
+            echo "::group::$t"
+            zig build install test-bin -Dtarget="$t" --prefix "$RUNNER_TEMP/$t"
+            echo "::endgroup::"
+          done
+
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      # As root, like on a real host: chown, apt-get and systemctl tests need it
+      - run: zig build test-bin
+      - run: sudo ./zig-out/bin/accord-test
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: zig build test --summary all

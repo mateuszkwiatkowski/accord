@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # artifact attestations
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: sudo apt-get update && sudo apt-get install -y minisign
+
+      # Fails unless the tag matches build.zig.zon; signs SHA256SUMS with the
+      # key in the MINISIGN_SECRET_KEY secret and checks it against minisign.pub
+      - name: Build, checksum and sign
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          [ -n "$MINISIGN_KEY" ] || { echo "MINISIGN_SECRET_KEY secret is not set" >&2; exit 1; }
+          umask 077
+          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+          MINISIGN_SECRET_KEY="$RUNNER_TEMP/minisign.key" scripts/release.sh "$GITHUB_REF_NAME"
+          rm -f "$RUNNER_TEMP/minisign.key"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: zig-out/release/accord-*.tar.gz
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (found) exit; found = index($0, "[" v "]") > 0; next }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || { echo "no CHANGELOG.md section for $version" >&2; exit 1; }
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" zig-out/release/* \
+            --verify-tag --title "accord ${GITHUB_REF_NAME#v}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            $(case "$GITHUB_REF_NAME" in *-*) echo --prerelease ;; esac)
