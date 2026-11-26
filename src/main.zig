@@ -174,6 +174,13 @@ test {
     _ = @import("system.zig");
     _ = @import("resources/resource.zig");
     _ = @import("resources/directory.zig");
+    _ = @import("resources/file.zig");
+    _ = @import("resources/package.zig");
+    _ = @import("resources/package_cache.zig");
+    _ = @import("resources/service.zig");
+    _ = @import("resources/group.zig");
+    _ = @import("resources/user.zig");
+    _ = @import("utils.zig");
     _ = @import("parser.zig");
     _ = @import("apply.zig");
 }

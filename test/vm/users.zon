@@ -1,0 +1,24 @@
+// VM test: groups, a user in them, and a file owned by that user, in one run
+// (groups and users are applied before files)
+.{
+    .groups = .{
+        .@"accord-app" = .{ .gid = 4711 },
+        .@"accord-web" = .{},
+    },
+    .users = .{
+        .@"accord-user" = .{
+            .uid = 4711,
+            .group = "accord-app",
+            // daemon exists on every OS in the matrix
+            .groups = .{ "accord-web", "daemon" },
+            .shell = "/bin/sh",
+        },
+    },
+    .files = .{
+        .@"/var/tmp/accord-vm-owned.txt" = .{
+            .content = "owned by accord-user\n",
+            .owner = "accord-user",
+            .group = "accord-app",
+        },
+    },
+}

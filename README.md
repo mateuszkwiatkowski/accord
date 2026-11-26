@@ -240,55 +240,63 @@ Manage system services (systemd, etc.).
 
 #### Users
 
-**Not implemented yet**: a manifest with a `.users` section is rejected. Planned syntax:
+Create, update and remove user accounts. Accounts get no usable password.
 
 ```zig
 .users = .{
     .deployer = .{
         .uid = 1001,
-        .groups = .{ "sudo", "docker", "www-data" },
-        .shell = "/bin/bash",
-        .home = "/home/deployer",
+        .group = "deployer",                // Primary group (must exist)
+        .groups = .{ "docker", "www-data" }, // Supplementary groups
+        .shell = "/bin/sh",
+        .home = "/srv/deployer",
     },
-    
-    .appuser = .{
-        .uid = 1002,
-        .groups = .{ "appgroup" },
-        .shell = "/bin/false",  // No login
+
+    .ops = .{
+        .groups = .{"wheel"},
+        .membership = .exact,  // Also leave any group not listed
     },
+
+    .olduser = .{ .state = .absent, .remove_home = true },
 }
 ```
 
 **Attributes**:
 - `name`: Username (specified as key)
-- `uid`: User ID (optional)
-- `groups`: List of groups (user will be added to these)
-- `shell`: Login shell (default: `/bin/bash`)
-- `home`: Home directory (default: `/home/username`)
+- `uid`: User ID (optional; the system picks one)
+- `group`: Primary group (optional; the system default otherwise)
+- `groups`: Supplementary groups, which must exist
+- `membership`: `.append` (default) only adds the user to `groups`; `.exact` also removes them from every other supplementary group. The primary group is never touched.
+- `shell`, `home`: optional; the system defaults apply when unset (usually `/bin/sh` and `/home/<name>`)
+- `state`: `.present` (default) or `.absent`
+- `remove_home`: with `.absent`, also delete the home directory (default: `false`)
 - `allow_failure`: Continue if operation fails
+
+**Tools**: `useradd`/`usermod`/`gpasswd` (Debian, Ubuntu, RHEL family), busybox `adduser`/`addgroup`/`deluser`/`delgroup` (Alpine), `pw` (FreeBSD). Nothing extra is installed.
+
+**Not supported**: changing the uid of an existing user (error on every OS); on Alpine, changing an existing user's shell, home or primary group (busybox has no `usermod`). These are reported as errors rather than ignored. They work when the user is created.
 
 ---
 
 #### Groups
 
-**Not implemented yet**: a manifest with a `.groups` section is rejected. Planned syntax:
+Create and remove groups.
 
 ```zig
 .groups = .{
-    .appgroup = .{
-        .gid = 1001,
-    },
-    
-    .developers = .{
-        .gid = 1002,
-    },
+    .appgroup = .{ .gid = 1001 },
+    .developers = .{},
+    .oldgroup = .{ .state = .absent },
 }
 ```
 
 **Attributes**:
 - `name`: Group name (specified as key)
-- `gid`: Group ID (optional)
+- `gid`: Group ID (optional). Changing the gid of an existing group is refused.
+- `state`: `.present` (default) or `.absent`
 - `allow_failure`: Continue if operation fails
+
+Groups are applied before users, so a group cannot be removed in the same run as the users whose primary group it is: remove the users first.
 
 ---
 
@@ -646,12 +654,12 @@ Container host configuration:
 
 ### Currently Supported
 
-| OS | Packages | Services |
-| --- | --- | --- |
-| Debian, Ubuntu | apt | systemd |
-| RHEL family (Rocky, Alma, Fedora) | dnf, yum | systemd |
-| Alpine Linux (musl) | apk | OpenRC |
-| FreeBSD | pkg | rc.d |
+| OS | Packages | Services | Users and groups |
+| --- | --- | --- | --- |
+| Debian, Ubuntu | apt | systemd | useradd & co. |
+| RHEL family (Rocky, Alma, Fedora) | dnf, yum | systemd | useradd & co. |
+| Alpine Linux (musl) | apk | OpenRC | busybox (no changing an existing user's shell, home or primary group) |
+| FreeBSD | pkg | rc.d | pw |
 
 Files and directories work on all of them.
 

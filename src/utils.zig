@@ -90,6 +90,17 @@ pub fn getFileOwnership(path: []const u8) !struct { uid: u32, gid: u32 } {
     };
 }
 
+/// Run a changing command, letting its stderr through; true if it exits 0
+pub fn run(io: std.Io, argv: []const []const u8) !bool {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    });
+    return (try child.wait(io)).success();
+}
+
 // Tests
 test "resolveUid - numeric UID" {
     const uid = try resolveUid("0");

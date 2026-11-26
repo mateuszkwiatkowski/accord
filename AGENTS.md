@@ -168,6 +168,7 @@ pub const InitSystem = enum {
 2. On Linux, `parseOsRelease` on `/etc/os-release`: `ID` first, then `ID_LIKE`
 3. Test for package manager presence (`which apt-get`, etc.)
 4. Test for init system (`systemctl --version`, etc.)
+5. Pick the user tool set (`pickUserTool`): `pw`, busybox on Alpine, else `useradd`
 5. Cache result for duration of run
 
 #### `apply.zig`
@@ -859,6 +860,17 @@ pub const PackageResource = struct {
 }
 ```
 
+### Example: User and Group Resources
+
+**Status**: ✅ **IMPLEMENTED** (see `src/resources/user.zig`, `src/resources/group.zig`)
+
+- Tool set is `SystemInfo.user_tool`: `shadow` (useradd & co.), `busybox` (Alpine, always, even with shadow installed: a default Alpine has nothing else) or `pw` (FreeBSD). No extra packages.
+- Current state comes from libc (`getpwnam`, `getgrgid`, `getgrent` member lists), never from tool output.
+- `plan()` is pure: (tool, desired, current) -> list of argv. `check` is "plan is empty", `apply` runs the plan. Every tool set is unit-tested through it on the Mac.
+- `error.UnsupportedChange` (with a logged reason) for uid/gid renumbering everywhere, and for shell/home/primary group changes on busybox, which has no usermod.
+- `membership = .exact` removes supplementary groups not listed; the primary group is never added or removed (busybox `adduser -G` also lists the user as a member of it).
+- Order: groups run before users, so removing a group that is still a user's primary group needs a separate earlier run for the user.
+
 ### Example: PackageCache Resource
 
 **Status**: ✅ **IMPLEMENTED** (see `src/resources/package_cache.zig`)
@@ -1049,7 +1061,7 @@ Zig **0.17.1**, pinned in `mise.toml` (`mise install`), `build.zig.zon` (`minimu
 - **libc via `std.c`**: `@cImport` no longer exists. `utils.zig` calls `std.c.getpwnam`/`getgrnam`/`stat`/`fchownat` directly (`link_libc = true` in `build.zig`). `chown` stays on libc because `std.Io.Dir.setFileOwner` panics with "TODO" in 0.17.1; `std.Io.File.Stat` exposes no uid/gid.
 - **Mode bits**: `stat.permissions.toMode()`, `File.Permissions.fromMode(mode)`.
 - **Cross-compiling**: `zig build install test-bin -Dtarget=aarch64-linux-gnu|aarch64-linux-musl|aarch64-freebsd` builds `accord` and the unit test binary (`bin/accord-test`) for another OS; `scripts/vm-test.sh` relies on it. Anything using `std.c` types must compile for all three: `std.c.Stat` is `void` on Linux, so `utils.getFileOwnership` uses `statx` there.
-- **Detection line**: `--log-level=debug` prints `os_family=… pkg_manager=… init_system=…` from `SystemInfo.detect`; the VM `detect` check asserts on its exact format.
+- **Detection line**: `--log-level=debug` prints `os_family=… pkg_manager=… init_system=… user_tool=…` from `SystemInfo.detect`; the VM `detect` check asserts on its exact format.
 
 Testing environments:
 
@@ -1135,9 +1147,9 @@ defer allocator.free(msg);
 - ✓ Directory resource (mode, owner, group)
 - ✓ Package resource (version pinning, state management)
 - ✓ Service resource (state and enabled management)
-- [ ] User resource (pending)
-- [ ] Group resource (pending)
-- ✓ Unit and integration tests (104 tests)
+- ✓ User resource (uid, primary/supplementary groups, membership, shell, home)
+- ✓ Group resource (gid, state)
+- ✓ Unit and integration tests (121 tests)
 - ✓ CLI with proper flags and exit codes
 
 ### Phase 2: Platform Expansion

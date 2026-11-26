@@ -12,7 +12,11 @@ pub const ApplyResult = struct {
     failed: usize,
 };
 
-/// Apply all resources in a manifest
+/// Apply all resources in a manifest. Sections run in a fixed order, each
+/// earlier one providing what later ones need: the package index, then
+/// packages (which may create groups and users), groups, users (which may be
+/// named as owners), directories, files (which may live in those
+/// directories), and services last. Within a section, manifest order.
 pub fn applyManifest(
     manifest: *parser.Manifest,
     sys: *const system.SystemInfo,
@@ -25,248 +29,60 @@ pub fn applyManifest(
         .failed = 0,
     };
 
-    // Refresh the package cache FIRST (must run before packages)
-    if (manifest.package_cache) |*cache| blk: {
-        result.total += 1;
-
-        // Check current state
-        const state = cache.check(sys) catch |err| {
-            if (cache.base.allow_failure) {
-                output.logError("PackageCache", cache.name, @errorName(err));
-                result.failed += 1;
-                break :blk;
-            } else {
-                return err;
-            }
-        };
-
-        // Log check result
-        const status_msg = switch (state) {
-            .satisfied => "already satisfied",
-            .needs_change => "needs changes",
-            .failed => "check failed",
-        };
-        output.logCheck("PackageCache", cache.name, status_msg);
-
-        // If already satisfied, skip
-        if (state == .satisfied) {
-            result.satisfied += 1;
-        } else {
-            // Apply changes (resource logs its own output)
-            output.logDebug(if (dry_run) "Calling cache.apply with dry_run=true" else "Calling cache.apply with dry_run=false");
-            const apply_result = cache.apply(sys, dry_run) catch |err| {
-                if (cache.base.allow_failure) {
-                    output.logError("PackageCache", cache.name, @errorName(err));
-                    result.failed += 1;
-                    break :blk;
-                } else {
-                    return err;
-                }
-            };
-
-            if (apply_result.changed) {
-                result.applied += 1;
-            } else {
-                result.satisfied += 1;
-            }
-        }
-    }
-
-    // Apply directories
-    for (manifest.directories) |*dir| {
-        result.total += 1;
-
-        // Check current state
-        const state = dir.check(sys) catch |err| {
-            if (dir.base.allow_failure) {
-                output.logError("Directory", dir.path, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        // Log check result
-        const status_msg = switch (state) {
-            .satisfied => "already satisfied",
-            .needs_change => "needs changes",
-            .failed => "check failed",
-        };
-        output.logCheck("Directory", dir.path, status_msg);
-
-        // If already satisfied, skip
-        if (state == .satisfied) {
-            result.satisfied += 1;
-            continue;
-        }
-
-        // Apply changes (resource logs its own output)
-        output.logDebug(if (dry_run) "Calling dir.apply with dry_run=true" else "Calling dir.apply with dry_run=false");
-        const apply_result = dir.apply(sys, dry_run) catch |err| {
-            if (dir.base.allow_failure) {
-                output.logError("Directory", dir.path, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        if (apply_result.changed) {
-            result.applied += 1;
-        } else {
-            result.satisfied += 1;
-        }
-    }
-
-    // Apply files
-    for (manifest.files) |*file| {
-        result.total += 1;
-
-        // Check current state
-        const state = file.check(sys) catch |err| {
-            if (file.base.allow_failure) {
-                output.logError("File", file.path, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        // Log check result
-        const status_msg = switch (state) {
-            .satisfied => "already satisfied",
-            .needs_change => "needs changes",
-            .failed => "check failed",
-        };
-        output.logCheck("File", file.path, status_msg);
-
-        // If already satisfied, skip
-        if (state == .satisfied) {
-            result.satisfied += 1;
-            continue;
-        }
-
-        // Apply changes (resource logs its own output)
-        output.logDebug(if (dry_run) "Calling file.apply with dry_run=true" else "Calling file.apply with dry_run=false");
-        const apply_result = file.apply(sys, dry_run) catch |err| {
-            if (file.base.allow_failure) {
-                output.logError("File", file.path, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        if (apply_result.changed) {
-            result.applied += 1;
-        } else {
-            result.satisfied += 1;
-        }
-    }
-
-    // Apply packages
-    for (manifest.packages) |*pkg| {
-        result.total += 1;
-
-        // Check current state
-        const state = pkg.check(sys) catch |err| {
-            if (pkg.base.allow_failure) {
-                output.logError("Package", pkg.name, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        // Log check result
-        const status_msg = switch (state) {
-            .satisfied => "already satisfied",
-            .needs_change => "needs changes",
-            .failed => "check failed",
-        };
-        output.logCheck("Package", pkg.name, status_msg);
-
-        // If already satisfied, skip
-        if (state == .satisfied) {
-            result.satisfied += 1;
-            continue;
-        }
-
-        // Apply changes (resource logs its own output)
-        output.logDebug(if (dry_run) "Calling pkg.apply with dry_run=true" else "Calling pkg.apply with dry_run=false");
-        const apply_result = pkg.apply(sys, dry_run) catch |err| {
-            if (pkg.base.allow_failure) {
-                output.logError("Package", pkg.name, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        if (apply_result.changed) {
-            result.applied += 1;
-        } else {
-            result.satisfied += 1;
-        }
-    }
-
-    // Apply services
-    for (manifest.services) |*svc| {
-        result.total += 1;
-
-        // Check current state
-        const state = svc.check(sys) catch |err| {
-            if (svc.base.allow_failure) {
-                output.logError("Service", svc.name, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        // Log check result
-        const status_msg = switch (state) {
-            .satisfied => "already satisfied",
-            .needs_change => "needs changes",
-            .failed => "check failed",
-        };
-        output.logCheck("Service", svc.name, status_msg);
-
-        // If already satisfied, skip
-        if (state == .satisfied) {
-            result.satisfied += 1;
-            continue;
-        }
-
-        // Apply changes (resource logs its own output)
-        output.logDebug(if (dry_run) "Calling svc.apply with dry_run=true" else "Calling svc.apply with dry_run=false");
-        const apply_result = svc.apply(sys, dry_run) catch |err| {
-            if (svc.base.allow_failure) {
-                output.logError("Service", svc.name, @errorName(err));
-                result.failed += 1;
-                continue;
-            } else {
-                return err;
-            }
-        };
-
-        if (apply_result.changed) {
-            result.applied += 1;
-        } else {
-            result.satisfied += 1;
-        }
-    }
-
-    // Future: apply users, groups
+    if (manifest.package_cache) |*cache| try applyOne("PackageCache", cache, sys, dry_run, &result);
+    for (manifest.packages) |*pkg| try applyOne("Package", pkg, sys, dry_run, &result);
+    for (manifest.groups) |*group| try applyOne("Group", group, sys, dry_run, &result);
+    for (manifest.users) |*user| try applyOne("User", user, sys, dry_run, &result);
+    for (manifest.directories) |*dir| try applyOne("Directory", dir, sys, dry_run, &result);
+    for (manifest.files) |*file| try applyOne("File", file, sys, dry_run, &result);
+    for (manifest.services) |*svc| try applyOne("Service", svc, sys, dry_run, &result);
 
     return result;
+}
+
+/// Check one resource and apply it if needed. An error stops the run unless
+/// the resource has allow_failure set, in which case it is counted and logged.
+fn applyOne(
+    comptime kind: []const u8,
+    res: anytype,
+    sys: *const system.SystemInfo,
+    dry_run: bool,
+    result: *ApplyResult,
+) !void {
+    result.total += 1;
+    const name = res.describe();
+
+    const state = res.check(sys) catch |err| {
+        if (!res.base.allow_failure) return err;
+        output.logError(kind, name, @errorName(err));
+        result.failed += 1;
+        return;
+    };
+
+    output.logCheck(kind, name, switch (state) {
+        .satisfied => "already satisfied",
+        .needs_change => "needs changes",
+        .failed => "check failed",
+    });
+
+    if (state == .satisfied) {
+        result.satisfied += 1;
+        return;
+    }
+
+    // The resource logs its own output
+    const apply_result = res.apply(sys, dry_run) catch |err| {
+        if (!res.base.allow_failure) return err;
+        output.logError(kind, name, @errorName(err));
+        result.failed += 1;
+        return;
+    };
+
+    if (apply_result.changed) {
+        result.applied += 1;
+    } else {
+        result.satisfied += 1;
+    }
 }
 
 // Tests

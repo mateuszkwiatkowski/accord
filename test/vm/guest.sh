@@ -4,7 +4,7 @@
 # everything into. One check per invocation; exit status is the verdict and
 # stdout/stderr is the check's log.
 #
-#   sh guest.sh unit|detect|files|packages|services
+#   sh guest.sh unit|detect|files|packages|services|users
 #
 # vm.conf (the OS's test/vm/<os>.conf) supplies EXPECT_DETECT and SERVICE.
 
@@ -172,10 +172,92 @@ check_services() {
 	service_to running enabled
 }
 
+# Field $2 of $1's line in /etc/passwd or /etc/group ($3), checked without
+# accord's own libc lookups.
+dbfield() {
+	awk -F: -v n="$1" -v f="$2" '$1 == n { print $f }' "$3"
+}
+
+# Groups listing $1 as a member, sorted, space-separated. Its primary group
+# is left out: busybox adduser -G also lists the user there.
+member_of() {
+	primary="$(awk -F: -v g="$(dbfield "$1" 4 /etc/passwd)" '$3 == g { print $1 }' /etc/group)"
+	awk -F: -v u="$1" -v p="$primary" '$1 != p { n = split($4, m, ","); for (i = 1; i <= n; i++) if (m[i] == u) print $1 }' /etc/group |
+		sort | tr '\n' ' ' | sed 's/ $//'
+}
+
+assert_eq() {
+	[ "$2" = "$3" ] || fail "$1: expected '$3', got '$2'"
+	echo "ok: $1 = $2"
+}
+
+check_users() {
+	user=accord-user
+	owned=/var/tmp/accord-vm-owned.txt
+
+	step "dry run creates nothing"
+	accord --dry-run apply users.zon
+	! grep -q "^$user:" /etc/passwd || fail "dry run created $user"
+	! grep -q "^accord-app:" /etc/group || fail "dry run created accord-app"
+
+	step "create groups, user and a file it owns"
+	accord apply users.zon
+	assert_eq "accord-app gid" "$(dbfield accord-app 3 /etc/group)" 4711
+	grep -q "^accord-web:" /etc/group || fail "accord-web was not created"
+	assert_eq "$user uid" "$(dbfield $user 3 /etc/passwd)" 4711
+	assert_eq "$user gid" "$(dbfield $user 4 /etc/passwd)" 4711
+	assert_eq "$user shell" "$(dbfield $user 7 /etc/passwd)" /bin/sh
+	assert_eq "$user groups" "$(member_of $user)" "accord-web daemon"
+	home="$(dbfield $user 6 /etc/passwd)"
+	[ -d "$home" ] || fail "home $home was not created"
+	assert_perms "$owned" "-* $user accord-app"
+
+	step "apply again (idempotency)"
+	accord apply users.zon
+	assert_idempotent users.zon
+
+	step "membership = .exact drops daemon"
+	accord apply users-exact.zon
+	assert_eq "$user groups" "$(member_of $user)" "accord-web"
+	accord apply users-exact.zon
+	assert_idempotent users-exact.zon
+
+	step "change the shell"
+	case "$EXPECT_DETECT" in
+	*user_tool=busybox*)
+		"$ACCORD" apply users-shell.zon > accord.out 2>&1 && fail "busybox shell change did not fail"
+		cat accord.out
+		grep -q "busybox cannot change" accord.out || fail "no unsupported-change message"
+		echo "ok: refused on busybox"
+		;;
+	*)
+		accord apply users-shell.zon
+		assert_eq "$user shell" "$(dbfield $user 7 /etc/passwd)" /usr/sbin/nologin
+		accord apply users-shell.zon
+		assert_idempotent users-shell.zon
+		;;
+	esac
+
+	step "remove the user and its home"
+	rm -f "$owned"
+	accord apply users-absent.zon
+	! grep -q "^$user:" /etc/passwd || fail "$user still exists"
+	[ ! -e "$home" ] || fail "home $home still exists"
+	assert_eq "memberships left" "$(member_of $user)" ""
+	accord apply users-absent.zon
+	assert_idempotent users-absent.zon
+
+	step "remove the groups"
+	accord apply users-groups-absent.zon
+	! grep -qE "^accord-(app|web):" /etc/group || fail "groups still exist"
+	accord apply users-groups-absent.zon
+	assert_idempotent users-groups-absent.zon
+}
+
 case "${1:-}" in
-unit | detect | files | packages | services) "check_$1" ;;
+unit | detect | files | packages | services | users) "check_$1" ;;
 *)
-	echo "usage: $0 unit|detect|files|packages|services" >&2
+	echo "usage: $0 unit|detect|files|packages|services|users" >&2
 	exit 2
 	;;
 esac

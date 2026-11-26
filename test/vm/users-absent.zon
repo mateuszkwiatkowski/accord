@@ -1,0 +1,8 @@
+// VM test: remove the user and its home. Groups are applied before users, so
+// the groups go in a second run (users-groups-absent.zon): a group cannot be
+// removed while it is still a user's primary group.
+.{
+    .users = .{
+        .@"accord-user" = .{ .state = .absent, .remove_home = true },
+    },
+}

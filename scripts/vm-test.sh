@@ -12,6 +12,7 @@
 # Usage:
 #   scripts/vm-test.sh [--keep] [os...]   run the matrix (default: every OS)
 #   scripts/vm-test.sh fetch [os...]      download + verify images only
+#   scripts/vm-test.sh up <os>            boot a fresh VM and leave it running
 #   scripts/vm-test.sh ssh <os> [cmd]     shell into a running VM
 #   scripts/vm-test.sh stop [os...]       stop running VMs
 #   scripts/vm-test.sh clean              stop everything, delete the cache
@@ -39,7 +40,7 @@ FIRMWARE="${ACCORD_VM_FIRMWARE:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
 SSH_KEY="$CACHE/id_ed25519"
 # The guest's working directory; test/vm/files.zon refers to it by path.
 GUEST_DIR=/var/tmp/accord-vm
-CHECKS="unit detect files packages services"
+CHECKS="unit detect files packages services users"
 # FreeBSD's first boot upgrades the base system and reboots before sshd is up.
 BOOT_TIMEOUT=900
 
@@ -328,6 +329,18 @@ cmd_run() {
 	summary "$@"
 }
 
+cmd_up() {
+	[ "$#" -eq 1 ] || fail "usage: $0 up <os>"
+	require_tools
+	load_conf "$1"
+	mkdir -p "$CACHE/run" "$OUT/$1"
+	[ -s "$SSH_KEY" ] || ssh-keygen -q -t ed25519 -N '' -C accord-vm-test -f "$SSH_KEY"
+	fetch "$1"
+	boot "$1"
+	wait_for_ssh "$1" || fail "$1 did not boot; see $OUT/$1/console.log"
+	info "$1 is up: $0 ssh $1"
+}
+
 cmd_fetch() {
 	[ "$#" -gt 0 ] || set -- $(all_os)
 	require_tools
@@ -353,7 +366,7 @@ cmd_clean() {
 }
 
 case "${1:-}" in
-fetch | ssh | stop | clean)
+fetch | up | ssh | stop | clean)
 	cmd="$1"
 	shift
 	"cmd_$cmd" "$@"

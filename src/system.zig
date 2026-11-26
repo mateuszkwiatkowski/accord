@@ -37,11 +37,19 @@ pub const InitSystem = enum {
     openrc, // Alpine/Gentoo
 };
 
+/// Tool set for managing users and groups
+pub const UserTool = enum {
+    shadow, // useradd, usermod, gpasswd... (Debian, Ubuntu, RHEL family)
+    busybox, // adduser, addgroup, deluser, delgroup (Alpine)
+    pw, // pw(8) (FreeBSD)
+};
+
 /// System information detected at runtime
 pub const SystemInfo = struct {
     os_family: OsFamily,
     pkg_manager: ?PkgManager,
     init_system: ?InitSystem,
+    user_tool: ?UserTool = null,
     /// I/O implementation used by resources for filesystem and process operations
     io: std.Io,
 
@@ -64,12 +72,20 @@ pub const SystemInfo = struct {
         // Detect init system
         info.init_system = detectInitSystem(io);
 
+        info.user_tool = pickUserTool(
+            info.os_family,
+            exists(io, "/usr/sbin/useradd"),
+            exists(io, "/bin/busybox"),
+            exists(io, "/usr/sbin/pw"),
+        );
+
         // One stable line; scripts/vm-test.sh asserts on it
-        var buf: [128]u8 = undefined;
-        output.logDebug(std.fmt.bufPrint(&buf, "os_family={t} pkg_manager={s} init_system={s}", .{
+        var buf: [160]u8 = undefined;
+        output.logDebug(std.fmt.bufPrint(&buf, "os_family={t} pkg_manager={s} init_system={s} user_tool={s}", .{
             info.os_family,
             if (info.pkg_manager) |pm| @tagName(pm) else "none",
             if (info.init_system) |init| @tagName(init) else "none",
+            if (info.user_tool) |tool| @tagName(tool) else "none",
         }) catch "system detected");
 
         return info;
@@ -163,6 +179,22 @@ fn detectPkgManager(io: std.Io) ?PkgManager {
     return null;
 }
 
+fn exists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
+    return true;
+}
+
+/// Pick the user/group tool set. Alpine always gets busybox: a default
+/// install has nothing else (its cloud images carry shadow only because
+/// cloud-init depends on it), so behavior does not depend on extra packages.
+pub fn pickUserTool(os_family: OsFamily, have_useradd: bool, have_busybox: bool, have_pw: bool) ?UserTool {
+    if (have_pw) return .pw;
+    if (os_family == .alpine and have_busybox) return .busybox;
+    if (have_useradd) return .shadow;
+    if (have_busybox) return .busybox;
+    return null;
+}
+
 /// Detect init system
 fn detectInitSystem(io: std.Io) ?InitSystem {
     // Check for systemd
@@ -231,4 +263,14 @@ test "parseOsRelease" {
     for (cases) |case| {
         try std.testing.expectEqual(case[1], parseOsRelease(case[0]));
     }
+}
+
+test "pickUserTool" {
+    try std.testing.expectEqual(UserTool.shadow, pickUserTool(.debian, true, false, false).?);
+    try std.testing.expectEqual(UserTool.shadow, pickUserTool(.redhat, true, false, false).?);
+    // Alpine with shadow installed still uses busybox
+    try std.testing.expectEqual(UserTool.busybox, pickUserTool(.alpine, true, true, false).?);
+    try std.testing.expectEqual(UserTool.busybox, pickUserTool(.unknown, false, true, false).?);
+    try std.testing.expectEqual(UserTool.pw, pickUserTool(.freebsd, false, false, true).?);
+    try std.testing.expect(pickUserTool(.macos, false, false, false) == null);
 }

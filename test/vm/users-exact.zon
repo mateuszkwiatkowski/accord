@@ -1,0 +1,10 @@
+// VM test: membership = .exact drops the user from daemon
+.{
+    .users = .{
+        .@"accord-user" = .{
+            .group = "accord-app",
+            .groups = .{"accord-web"},
+            .membership = .exact,
+        },
+    },
+}

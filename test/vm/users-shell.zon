@@ -1,0 +1,6 @@
+// VM test: change an existing user's shell (refused with busybox)
+.{
+    .users = .{
+        .@"accord-user" = .{ .shell = "/usr/sbin/nologin" },
+    },
+}

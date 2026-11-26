@@ -6,6 +6,8 @@ const FileResource = @import("resources/file.zig").FileResource;
 const PackageResource = @import("resources/package.zig").PackageResource;
 const ServiceResource = @import("resources/service.zig").ServiceResource;
 const PackageCacheResource = @import("resources/package_cache.zig").PackageCacheResource;
+const GroupResource = @import("resources/group.zig").GroupResource;
+const UserResource = @import("resources/user.zig").UserResource;
 const output = @import("output.zig");
 
 /// Manifest structure containing all resources, each section in manifest order
@@ -15,7 +17,8 @@ pub const Manifest = struct {
     files: []FileResource = &.{},
     packages: []PackageResource = &.{},
     services: []ServiceResource = &.{},
-    // Future: users, groups
+    groups: []GroupResource = &.{},
+    users: []UserResource = &.{},
 
     /// Owns the resource slices and every string they point to
     arena: std.heap.ArenaAllocator,
@@ -28,7 +31,7 @@ pub const Manifest = struct {
 pub const ParseError = error{ InvalidManifest, OutOfMemory };
 
 /// Top-level sections, for the "unknown section" message
-const sections_list = "package_cache, directories, files, packages, services";
+const sections_list = "package_cache, packages, groups, users, directories, files, services";
 
 /// Resource bodies as written in a manifest. The key (path or name) is not
 /// part of the body, and `allow_failure` sits beside the other attributes.
@@ -60,6 +63,24 @@ const PackageSpec = struct {
 const ServiceSpec = struct {
     state: ServiceResource.ServiceState = .running,
     enabled: bool = true,
+    allow_failure: bool = false,
+};
+
+const GroupSpec = struct {
+    gid: ?u32 = null,
+    state: GroupResource.GroupState = .present,
+    allow_failure: bool = false,
+};
+
+const UserSpec = struct {
+    uid: ?u32 = null,
+    group: ?[]const u8 = null,
+    groups: []const []const u8 = &.{},
+    membership: UserResource.Membership = .append,
+    shell: ?[]const u8 = null,
+    home: ?[]const u8 = null,
+    state: UserResource.UserState = .present,
+    remove_home: bool = false,
     allow_failure: bool = false,
 };
 
@@ -191,6 +212,37 @@ const Parser = struct {
                     .enabled = e.spec.enabled,
                 };
                 manifest.services = svcs;
+            } else if (std.mem.eql(u8, name, "groups")) {
+                const entries = try p.section(GroupSpec, node, false);
+                const groups = try p.arena.alloc(GroupResource, entries.len);
+                for (entries, groups) |e, *group| group.* = .{
+                    .base = .{ .allow_failure = e.spec.allow_failure },
+                    .name = e.key,
+                    .gid = e.spec.gid,
+                    .state = e.spec.state,
+                };
+                manifest.groups = groups;
+            } else if (std.mem.eql(u8, name, "users")) {
+                const entries = try p.section(UserSpec, node, false);
+                const users = try p.arena.alloc(UserResource, entries.len);
+                for (entries, users) |e, *user| {
+                    // Account names reach useradd & co. as arguments
+                    if (e.spec.group) |g| try p.checkAccountName(node, g);
+                    for (e.spec.groups) |g| try p.checkAccountName(node, g);
+                    user.* = .{
+                        .base = .{ .allow_failure = e.spec.allow_failure },
+                        .name = e.key,
+                        .uid = e.spec.uid,
+                        .group = e.spec.group,
+                        .groups = e.spec.groups,
+                        .membership = e.spec.membership,
+                        .shell = e.spec.shell,
+                        .home = e.spec.home,
+                        .state = e.spec.state,
+                        .remove_home = e.spec.remove_home,
+                    };
+                }
+                manifest.users = users;
             } else {
                 return p.fail(node, true, "unknown section '.{s}' (supported: {s})", .{ name, sections_list });
             }
@@ -218,12 +270,27 @@ const Parser = struct {
             if (paths and !std.fs.path.isAbsolute(key)) {
                 return p.fail(body, true, "'{s}' is not an absolute path", .{key});
             }
+            if (!paths) try p.checkName(body, key);
             entry.* = .{
                 .key = try p.arena.dupe(u8, key),
                 .spec = try p.typed(Spec, body),
             };
         }
         return entries;
+    }
+
+    /// Names are passed to package, service and account tools as arguments:
+    /// one starting with '-' would be read as an option
+    fn checkName(p: *Parser, node: Zoir.Node.Index, name: []const u8) ParseError!void {
+        if (name.len == 0 or name[0] == '-' or std.mem.indexOfAny(u8, name, " \t\n/:,") != null) {
+            return p.fail(node, true, "'{s}' is not a valid name", .{name});
+        }
+    }
+
+    fn checkAccountName(p: *Parser, section_node: Zoir.Node.Index, name: []const u8) ParseError!void {
+        if (name.len == 0 or name[0] == '-' or std.mem.indexOfAny(u8, name, " \t\n/:,") != null) {
+            return p.fail(section_node, true, "'{s}' is not a valid group name", .{name});
+        }
     }
 
     /// Parse one node into T with std.zon: strict about unknown fields and types
@@ -460,9 +527,9 @@ test "reject unknown section" {
     try expectInvalidWith(
         \\.{
         \\    .files = .{},
-        \\    .users = .{ .deployer = .{} },
+        \\    .user = .{ .deployer = .{} },
         \\}
-    , "m.zon:3:6: error: unknown section '.users'");
+    , "m.zon:3:6: error: unknown section '.user'");
     try expectInvalidWith(".{ .servics = .{} }", "unknown section '.servics'");
 }
 
@@ -492,5 +559,61 @@ test "reject a root that is not a struct" {
 }
 
 test "plain parse frees the message" {
-    try testing.expectError(error.InvalidManifest, parse(testing.allocator, ".{ .users = .{} }"));
+    try testing.expectError(error.InvalidManifest, parse(testing.allocator, ".{ .usrs = .{} }"));
+}
+
+test "parse groups and users" {
+    const content =
+        \\.{
+        \\    .groups = .{
+        \\        .app = .{ .gid = 4200 },
+        \\        .old = .{ .state = .absent },
+        \\    },
+        \\    .users = .{
+        \\        .deploy = .{
+        \\            .uid = 4300,
+        \\            .group = "app",
+        \\            .groups = .{ "web", "docker" },
+        \\            .membership = .exact,
+        \\            .shell = "/bin/sh",
+        \\            .home = "/srv/deploy",
+        \\        },
+        \\        .bare = .{},
+        \\        .gone = .{ .state = .absent, .remove_home = true },
+        \\    },
+        \\}
+    ;
+    var manifest = try parse(testing.allocator, content);
+    defer manifest.deinit();
+
+    const groups = manifest.groups;
+    try testing.expectEqual(2, groups.len);
+    try testing.expectEqualStrings("app", groups[0].name);
+    try testing.expectEqual(@as(?u32, 4200), groups[0].gid);
+    try testing.expectEqual(GroupResource.GroupState.absent, groups[1].state);
+
+    const users = manifest.users;
+    try testing.expectEqual(3, users.len);
+    const deploy = users[0];
+    try testing.expectEqualStrings("deploy", deploy.name);
+    try testing.expectEqual(@as(?u32, 4300), deploy.uid);
+    try testing.expectEqualStrings("app", deploy.group.?);
+    try testing.expectEqual(2, deploy.groups.len);
+    try testing.expectEqualStrings("docker", deploy.groups[1]);
+    try testing.expectEqual(UserResource.Membership.exact, deploy.membership);
+    try testing.expectEqualStrings("/bin/sh", deploy.shell.?);
+    try testing.expectEqualStrings("/srv/deploy", deploy.home.?);
+
+    const bare = users[1];
+    try testing.expect(bare.uid == null and bare.group == null and bare.shell == null and bare.home == null);
+    try testing.expectEqual(0, bare.groups.len);
+    try testing.expectEqual(UserResource.Membership.append, bare.membership);
+    try testing.expect(users[2].remove_home);
+}
+
+test "reject unknown user attribute and bad names" {
+    try expectInvalidWith(".{ .users = .{ .deploy = .{ .password = \"x\" } } }", "password");
+    try expectInvalidWith(".{ .groups = .{ .@\"-r\" = .{} } }", "'-r' is not a valid name");
+    try expectInvalidWith(".{ .users = .{ .deploy = .{ .groups = .{\"-f\"} } } }", "'-f' is not a valid group name");
+    try expectInvalidWith(".{ .packages = .{ .@\"--force\" = .{} } }", "not a valid name");
 }

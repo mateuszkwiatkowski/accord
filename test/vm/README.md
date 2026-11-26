@@ -10,6 +10,7 @@ scripts/vm-test.sh                    # every OS, in parallel (~2 min when cache
 scripts/vm-test.sh debian alpine      # a subset
 scripts/vm-test.sh --keep freebsd     # leave a VM running if a check fails
 scripts/vm-test.sh ssh freebsd        # ...then look around in it
+scripts/vm-test.sh up rocky           # boot a fresh VM and leave it running
 scripts/vm-test.sh stop               # stop kept VMs
 ```
 
@@ -45,10 +46,11 @@ EDK2 firmware. 1-3 GB per OS for cached images in `~/.cache/accord-vm`
 | Check | Passes when |
 | --- | --- |
 | `unit` | the unit test binary passes as root (apt/dpkg/systemd tests skip where absent) |
-| `detect` | the `os_family=… pkg_manager=… init_system=…` debug line equals `EXPECT_DETECT` |
+| `detect` | the `os_family=… pkg_manager=… init_system=… user_tool=…` debug line equals `EXPECT_DETECT` |
 | `files` | `files.zon`: dry run creates nothing; modes and owner/group by name are right; a second run applies 0; drift is repaired |
 | `packages` | `package-cache.zon` refreshes the index; `tree` is installed, then removed, each idempotent and confirmed by the package database |
 | `services` | `SERVICE` is started+enabled, stopped+disabled, started+enabled again, as reported by the init system itself; each idempotent |
+| `users` | `users.zon` creates two groups (one with a fixed gid), a user in them and a file it owns, in one run; `users-exact.zon` drops a group; `users-shell.zon` changes the shell (must be refused on busybox); then the user (with home) and the groups are removed. Every step is checked against `/etc/passwd` and `/etc/group` and is idempotent |
 
 A check stops at its first failure, so a failure hides any later assertion in
 the same check.
@@ -57,13 +59,13 @@ the same check.
 
 As of 2026-11-26, every cell passes. Treat any `FAIL` as a regression:
 
-| OS | boot | unit | detect | files | packages | services |
-| --- | --- | --- | --- | --- | --- | --- |
-| Ubuntu 26.04 | PASS | PASS | PASS | PASS | PASS | PASS |
-| Debian 13 | PASS | PASS | PASS | PASS | PASS | PASS |
-| Rocky Linux 10 | PASS | PASS | PASS | PASS | PASS | PASS |
-| Alpine 3.24 | PASS | PASS | PASS | PASS | PASS | PASS |
-| FreeBSD 15.1 | PASS | PASS | PASS | PASS | PASS | PASS |
+| OS | boot | unit | detect | files | packages | services | users |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Ubuntu 26.04 | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Debian 13 | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Rocky Linux 10 | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| Alpine 3.24 | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| FreeBSD 15.1 | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
 On Debian and Ubuntu the unit tests include the apt/dpkg/systemd integration
 tests; elsewhere those 4 skip.
@@ -93,6 +95,12 @@ Copy a `.conf` and fill in:
 - **Debian's genericcloud image has no cron**, hence `systemd-timesyncd`.
 - **Alpine's busybox has a `tree` applet**, so `command -v tree` finds it even
   with the package removed. `guest.sh` asks the package database instead.
+- **Alpine's cloud image has shadow** (`useradd`, `usermod`) only because
+  cloud-init needs it. accord ignores it there and uses busybox, so the
+  `users` check covers the tools a default Alpine has.
+- **busybox `adduser -G grp` also lists the user as a member of `grp`**, their
+  primary group. `guest.sh` leaves the primary group out when comparing
+  memberships.
 - **Alpine ships `crond` stopped and disabled**, the others running and enabled.
   The start/stop/start order covers both.
 - **Rocky's `ls -l` appends `.`** (SELinux context). `guest.sh` strips it.

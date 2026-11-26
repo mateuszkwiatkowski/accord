@@ -1,0 +1,7 @@
+// VM test: remove the groups created by users.zon
+.{
+    .groups = .{
+        .@"accord-app" = .{ .state = .absent },
+        .@"accord-web" = .{ .state = .absent },
+    },
+}
